@@ -514,3 +514,14 @@ def test_document_parent_access(verified, user, document):
     user.groups.clear()
     user.user_permissions.add(Permission.objects.get(codename="view_document"))
     assert verified.get(f"/documents/{document.pk}/download/").status_code == 403
+
+
+@pytest.mark.parametrize(
+    "path", ["/companies/?manager=invalid", "/stores/?chain=invalid"]
+)
+def test_invalid_filters(verified, path):
+    assert verified.get(path).status_code == 200
+
+
+def test_invalid_notification_id(verified):
+    assert verified.post("/notifications/", {"id": "invalid"}).status_code == 200

@@ -156,9 +156,17 @@ def listing(request, kind):
                 Q(name__icontains=query) | Q(inn__icontains=query)
             )
         if request.GET.get("manager"):
-            objects = objects.filter(manager_id=request.GET["manager"])
+            objects = (
+                objects.filter(manager_id=request.GET["manager"])
+                if request.GET["manager"].isascii() and request.GET["manager"].isdigit()
+                else objects.none()
+            )
     if kind == "stores" and request.GET.get("chain"):
-        objects = objects.filter(chain_id=request.GET["chain"])
+        objects = (
+            objects.filter(chain_id=request.GET["chain"])
+            if request.GET["chain"].isascii() and request.GET["chain"].isdigit()
+            else objects.none()
+        )
     if kind in ("projects", "tasks") and request.GET.get("status"):
         objects = objects.filter(status=request.GET["status"])
     return render(
@@ -237,7 +245,11 @@ def download(request, pk):
 
 
 def notifications(request):
-    if request.method == "POST":
+    if (
+        request.method == "POST"
+        and request.POST.get("id", "").isascii()
+        and request.POST.get("id", "").isdigit()
+    ):
         Notification.objects.filter(
             user=request.user, pk=request.POST.get("id")
         ).update(read=True)

@@ -1,8 +1,8 @@
 # Проверка этапа A — 6 ноября 2026
 
 - Python 3.12.14, Django 5.2.19, DRF 3.16.1.
-- Pytest / SQLite: **48 passed**.
-- Pytest / PostgreSQL 17.11: **48 passed**; отдельная чистая тестовая БД.
+- Pytest / SQLite: **51 passed**.
+- Pytest / PostgreSQL 17.11: **51 passed**; отдельная чистая тестовая БД.
 - `migrate --noinput`: все миграции применены к PostgreSQL и SQLite.
 - `makemigrations --check --dry-run`: No changes detected.
 - `manage.py check`: No issues.
