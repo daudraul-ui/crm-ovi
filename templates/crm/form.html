@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<h1>{{ title }}</h1><section class="card form-card"><form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}<button class="primary">Сохранить</button><a href="javascript:history.back()">Отмена</a></form></section>{% endblock %}

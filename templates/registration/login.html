@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<div class="auth card"><p class="eyebrow">CRM OVI</p><h1>Вход в систему</h1><p>Ваши клиенты, проекты и задачи в одном месте.</p><form method="post">{% csrf_token %}{{ form.as_p }}<button class="primary">Продолжить</button></form></div>{% endblock %}
