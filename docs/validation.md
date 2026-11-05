@@ -12,6 +12,8 @@
 - Dockerfile: образ собран с Python 3.12, зависимости установлены, collectstatic выполнен под непривилегированным UID 10001.
 - `docker compose config --quiet`: passed; PostgreSQL и Redis запущены, healthcheck healthy, миграции и bootstrap через Compose выполнены.
 - Redis cache + реальный Celery Worker + result backend: постановка и выполнение `notify_overdue` подтверждены.
+- Celery Beat: процесс запущен с PersistentScheduler и Redis broker.
+- `pg_dump -Fc` → `pg_restore --single-transaction` в отдельную PostgreSQL БД: успешно, восстановлено 19 записей django_migrations. Media volume и полный shell-сценарий восстановления не проверялись.
 
 ## Ограничение окружения
 
