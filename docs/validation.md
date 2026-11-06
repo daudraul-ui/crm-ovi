@@ -74,4 +74,11 @@ Managed-среда по-прежнему использует Docker VFS; при
 - Chromium / desktop 1440×1000 и mobile 390×844: PASS — сотрудники/роли, менеджер, карточка сети, обновление зависимых полей, глобальный регион, создание формата без потери ввода и четыре ссылки на главной. Ошибок JavaScript и горизонтального переполнения viewport не обнаружено.
 - Django check / makemigrations --check: PASS; Tailwind CSS собран, JS syntax и Ruff F/I проверены.
 
-Новые проверки включены в pytest и Compose integration, результат GitHub Actions будет записан после завершения прогона. Публичный TLS на VPS и остальные ранее отмеченные невыполненные инфраструктурные проверки не повторялись. Новые бизнес-процессы не добавлены.
+Новые проверки включены в pytest и Compose integration. Проверенный код: [`cc0010f`](https://github.com/daudraul-ui/crm-ovi/commit/cc0010f1520211ad68fb3dab06efe56bc6e18e78).
+
+- [Tests #16 — success](https://github.com/daudraul-ui/crm-ovi/actions/runs/42210110910): **72 passed** на PostgreSQL 17, в том числе тест перехода 0001→0004 на существующих данных.
+- [Compose integration #10 — success](https://github.com/daudraul-ui/crm-ovi/actions/runs/42210110902): Chromium desktop/mobile на полном стеке при DEBUG=0, все новые UI-сценарии, HTTP Caddy, статика, Redis/Worker/Beat и PostgreSQL+media backup/restore.
+- В первом PostgreSQL-прогоне выявлен конфликт CREATE INDEX с pending trigger events при совмещении переноса непустых данных и изменения схемы в одной транзакции. Исправление: 0002 добавляет схему, 0003 переносит данные, 0004 удаляет старую привязку/добавляет финальные ограничения; повторный прогон успешен.
+- Скриншоты двух размеров экрана и логи доступны в artifacts Compose integration; fixtures/cookies не публикуются.
+
+Инструкция обновления Codespaces и ручной приёмки — в разделе TASK 001.1 README. Публичный TLS на VPS и остальные ранее отмеченные невыполненные инфраструктурные проверки не повторялись. Новые бизнес-процессы не добавлены.
