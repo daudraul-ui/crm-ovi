@@ -18,35 +18,11 @@ from crm.models import (
     Project,
     Region,
     Store,
+    StoreFormat,
     Task,
 )
 
 pytestmark = pytest.mark.django_db
-
-
-@pytest.fixture
-def user():
-    call_command("bootstrap", verbosity=0)
-    user = User.objects.create_user("director", password="valid-password-123")
-    user.groups.add(Group.objects.get(name="Директор"))
-    return user
-
-
-@pytest.fixture
-def verified(client, user):
-    client.force_login(user)
-    device = TOTPDevice.objects.create(user=user, confirmed=True)
-    session = client.session
-    session["otp_device_id"] = device.persistent_id
-    session.save()
-    return client
-
-
-@pytest.fixture
-def company(user):
-    return Company.objects.create(
-        name="Клиент", inn="7701234567", manager=user, financial_notes="Секрет"
-    )
 
 
 def code(device):
@@ -193,11 +169,13 @@ def test_stores_projects_crud(verified, user, company):
 def test_store_cross_chain_and_unique(verified):
     a = Chain.objects.create(name="A")
     b = Chain.objects.create(name="B")
-    region = Region.objects.create(chain=b, name="Регион")
+    region = Region.objects.create(name="Регион")
+    fmt = StoreFormat.objects.create(chain=b, name="Формат")
     data = {
         "name": "Магазин",
         "chain": a.pk,
         "region": region.pk,
+        "format": fmt.pk,
         "code": "1",
         "address": "Адрес",
     }
@@ -205,7 +183,7 @@ def test_store_cross_chain_and_unique(verified):
         verified.post("/api/stores/", data, content_type="application/json").status_code
         == 400
     )
-    data.pop("region")
+    data.pop("format")
     assert (
         verified.post("/api/stores/", data, content_type="application/json").status_code
         == 201

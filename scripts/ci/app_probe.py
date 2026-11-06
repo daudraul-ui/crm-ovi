@@ -22,7 +22,16 @@ from django.test import Client
 from django.utils import timezone
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
-from crm.models import Company, Document, Notification, Project, Task
+from crm.models import (
+    Chain,
+    Company,
+    Document,
+    Notification,
+    Project,
+    Region,
+    StoreFormat,
+    Task,
+)
 from crm.tasks import notify_overdue
 
 if os.getenv("CRM_COMPOSE_SMOKE") != "1":
@@ -131,4 +140,39 @@ def manifest():
     print(json.dumps(data, sort_keys=True))
 
 
-{"seed": seed, "auth": auth, "manifest": manifest}[sys.argv[1]]()
+def browser_fixtures():
+    user, _ = check_data()
+    suffix = secrets.token_hex(4)
+    a = Company.objects.create(name="ЮЛ A " + suffix, manager=user)
+    b = Company.objects.create(name="ЮЛ B " + suffix, manager=user)
+    chain = Chain.objects.create(name="Другая сеть " + suffix)
+    chain.companies.add(a)
+    fmt = StoreFormat.objects.create(name="Формат другой сети " + suffix, chain=chain)
+    region = Region.objects.create(name="Регион UI " + suffix)
+    client = Client()
+    client.force_login(user)
+    session = client.session
+    session["otp_device_id"] = user.totpdevice_set.get(confirmed=True).persistent_id
+    session.save()
+    print(
+        json.dumps(
+            {
+                "session": session.session_key,
+                "suffix": suffix,
+                "company_a": a.pk,
+                "company_b": b.pk,
+                "company_b_name": b.name,
+                "other_chain": chain.pk,
+                "other_format_name": fmt.name,
+                "region": region.pk,
+            }
+        )
+    )
+
+
+{
+    "seed": seed,
+    "auth": auth,
+    "manifest": manifest,
+    "browser-fixtures": browser_fixtures,
+}[sys.argv[1]]()

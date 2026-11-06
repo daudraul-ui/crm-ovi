@@ -1,20 +1,20 @@
 import io
 
-from django.contrib.auth import login, logout
+from django.contrib.auth import get_user_model, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.db.models import Q
-from django.http import FileResponse, HttpResponse, HttpResponseBadRequest
+from django.http import FileResponse, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 from django_otp import login as otp_login
 from django_otp.plugins.otp_totp.models import TOTPDevice
 from openpyxl import load_workbook
 
-from .forms import LABELS, MODELS, form_class
+from .forms import LABELS, MODELS, EmployeeForm, form_class
 from .models import (
     AuditEvent,
     Chain,
@@ -28,6 +28,7 @@ from .models import (
     Store,
     StoreFormat,
     Task,
+    region_key,
 )
 from .security import allowed
 from .services import assigned, audit, snapshot
@@ -118,7 +119,7 @@ def dashboard(request):
     for key in ("companies", "stores", "projects", "tasks"):
         model = MODELS[key]
         if allowed(request.user, model):
-            counts.append((LABELS[key], model.objects.count()))
+            counts.append((LABELS[key], model.objects.count(), key))
     overdue = (
         Task.objects.exclude(status="done").filter(due_at__lt=timezone.now())
         if allowed(request.user, Task)
@@ -142,7 +143,11 @@ def listing(request, kind):
     model = MODELS.get(kind)
     if not model or not allowed(request.user, model):
         raise PermissionDenied
-    objects = model.objects.all()
+    objects = (
+        model.objects.filter(canonical__isnull=True)
+        if model is Region
+        else model.objects.all()
+    )
     query = request.GET.get("q", "")
     if query:
         objects = (
@@ -186,7 +191,12 @@ def edit(request, kind, pk=None):
     model = MODELS.get(kind)
     if not model or not allowed(request.user, model, "change" if pk else "add"):
         raise PermissionDenied
-    obj = get_object_or_404(model, pk=pk) if pk else None
+    queryset = (
+        model.objects.filter(canonical__isnull=True)
+        if model is Region
+        else model.objects.all()
+    )
+    obj = get_object_or_404(queryset, pk=pk) if pk else None
     before = snapshot(obj)
     previous_assignee = obj.assignee_id if isinstance(obj, Task) else None
     form = form_class(model, request.user)(
@@ -205,7 +215,17 @@ def edit(request, kind, pk=None):
             if isinstance(saved, Task) and previous_assignee != saved.assignee_id:
                 assigned(saved)
         return redirect("listing", kind=kind)
-    return render(request, "crm/form.html", {"form": form, "title": LABELS[kind]})
+    return render(
+        request,
+        "crm/form.html",
+        {
+            "form": form,
+            "title": LABELS[kind],
+            "kind": kind,
+            "quick_format": kind == "stores"
+            and allowed(request.user, StoreFormat, "add"),
+        },
+    )
 
 
 @require_POST
@@ -213,7 +233,12 @@ def delete(request, kind, pk):
     model = MODELS.get(kind)
     if not model or not allowed(request.user, model, "delete"):
         raise PermissionDenied
-    obj = get_object_or_404(model, pk=pk)
+    queryset = (
+        model.objects.filter(canonical__isnull=True)
+        if model is Region
+        else model.objects.all()
+    )
+    obj = get_object_or_404(queryset, pk=pk)
     from django.db.models.deletion import ProtectedError
 
     try:
@@ -269,7 +294,15 @@ def settings_view(request):
     return render(
         request,
         "crm/settings.html",
-        {"events": events, "groups": request.user.groups.all()},
+        {
+            "events": events,
+            "groups": request.user.groups.all(),
+            "employees": get_user_model()
+            .objects.prefetch_related("groups")
+            .order_by("last_name", "username")
+            if request.user.has_perm("crm.manage_employees")
+            else None,
+        },
     )
 
 
@@ -306,7 +339,10 @@ def import_stores(request):
                     chain_name, code, name, address, region_name, format_name = row
                     chain = Chain.objects.get(name=chain_name)
                     region = (
-                        Region.objects.get(chain=chain, name=region_name)
+                        Region.objects.get(
+                            normalized_name=region_key(region_name),
+                            canonical__isnull=True,
+                        )
                         if region_name
                         else None
                     )
@@ -345,10 +381,21 @@ def detail(request, kind, pk):
     model = MODELS.get(kind)
     if not model or not allowed(request.user, model):
         raise PermissionDenied
-    obj = get_object_or_404(model, pk=pk)
+    queryset = (
+        model.objects.filter(canonical__isnull=True)
+        if model is Region
+        else model.objects.all()
+    )
+    obj = get_object_or_404(queryset, pk=pk)
     fields = []
     for field in model._meta.fields:
-        if field.name in ("id", "file"):
+        if field.name in ("id", "file", "normalized_name", "canonical", "legacy_data"):
+            continue
+        if (
+            field.name == "company"
+            and isinstance(obj, Store)
+            and not allowed(request.user, Company)
+        ):
             continue
         if field.name == "financial_notes" and not request.user.has_perm(
             "crm.view_finance"
@@ -391,7 +438,77 @@ def detail(request, kind, pk):
             "contacts": contacts,
             "events": events,
             "stores": obj.stores.all() if isinstance(obj, Project) else [],
+            "companies": obj.companies.all()
+            if isinstance(obj, Chain) and allowed(request.user, Company)
+            else [],
             "can_change": allowed(request.user, model, "change"),
             "can_delete": allowed(request.user, model, "delete"),
         },
+    )
+
+
+def employee_create(request):
+    if not request.user.has_perm("crm.manage_employees"):
+        raise PermissionDenied
+    form = EmployeeForm(request.POST or None, actor=request.user)
+    if request.method == "POST" and form.is_valid():
+        with transaction.atomic():
+            employee = form.save()
+            employee.groups.set(form.cleaned_data["roles"])
+            AuditEvent.objects.create(
+                actor=request.user,
+                action="employee_created",
+                model="auth.User",
+                object_id=str(employee.pk),
+                after={
+                    "username": employee.username,
+                    "roles": list(employee.groups.values_list("name", flat=True)),
+                },
+            )
+        return redirect("settings")
+    return render(request, "crm/form.html", {"form": form, "title": "Новый сотрудник"})
+
+
+def can_edit_store(user):
+    return allowed(user, Store, "add") or allowed(user, Store, "change")
+
+
+@require_GET
+def store_options(request):
+    if not can_edit_store(request.user):
+        raise PermissionDenied
+    raw = request.GET.get("chain", "")
+    chain = (
+        Chain.objects.filter(pk=raw).first()
+        if raw.isascii() and raw.isdigit()
+        else None
+    )
+    return JsonResponse(
+        {
+            "companies": list(chain.companies.values("id", "name"))
+            if chain and allowed(request.user, Company)
+            else [],
+            "formats": list(
+                StoreFormat.objects.filter(chain=chain).values("id", "name")
+            )
+            if chain
+            else [],
+        }
+    )
+
+
+@require_POST
+def store_format_create(request):
+    if not can_edit_store(request.user) or not allowed(
+        request.user, StoreFormat, "add"
+    ):
+        raise PermissionDenied
+    form = form_class(StoreFormat, request.user)(request.POST)
+    if not form.is_valid():
+        return JsonResponse({"errors": form.errors}, status=400)
+    with transaction.atomic():
+        fmt = form.save()
+        audit(request.user, "create", fmt)
+    return JsonResponse(
+        {"id": fmt.pk, "name": fmt.name, "chain": fmt.chain_id}, status=201
     )

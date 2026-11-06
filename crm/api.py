@@ -5,7 +5,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.routers import DefaultRouter
 
 from .forms import MODELS
-from .models import Comment, Document, Task
+from .models import Chain, Comment, Document, Region, Store, Task
 from .security import allowed
 from .services import assigned, audit, snapshot
 
@@ -15,6 +15,16 @@ class ValidatedSerializer(serializers.ModelSerializer):
         fields = super().get_fields()
         if not self.context["request"].user.has_perm("crm.view_finance"):
             fields.pop("financial_notes", None)
+        if "region" in fields:
+            fields["region"].queryset = Region.objects.filter(canonical__isnull=True)
+        if self.Meta.model is Region:
+            for name in ("normalized_name", "canonical", "legacy_data"):
+                fields.pop(name, None)
+        if not self.context["request"].user.has_perm("crm.view_company"):
+            if self.Meta.model is Chain:
+                fields.pop("companies", None)
+            elif self.Meta.model is Store:
+                fields.pop("company", None)
         if "file" in fields:
             fields["file"].write_only = True
         return fields
@@ -32,6 +42,18 @@ class ValidatedSerializer(serializers.ModelSerializer):
                 setattr(obj, key, value)
         try:
             obj.full_clean(exclude=["author", "uploaded_by"])
+            if isinstance(obj, Chain) and "companies" in attrs:
+                obj.validate_companies([company.pk for company in attrs["companies"]])
+            if (
+                "manager" in attrs
+                and not attrs["manager"].is_active
+                and (
+                    not self.instance or self.instance.manager_id != attrs["manager"].pk
+                )
+            ):
+                raise DjangoValidationError(
+                    {"manager": "Выберите активного сотрудника"}
+                )
         except DjangoValidationError as exc:
             raise serializers.ValidationError(
                 exc.message_dict if hasattr(exc, "message_dict") else exc.messages
@@ -108,6 +130,11 @@ for key, model in MODELS.items():
     view = type(
         f"{model.__name__}ViewSet",
         (ResourceViewSet,),
-        {"queryset": model.objects.all(), "serializer_class": serializer},
+        {
+            "queryset": model.objects.filter(canonical__isnull=True)
+            if model is Region
+            else model.objects.all(),
+            "serializer_class": serializer,
+        },
     )
     router.register(key, view, basename=key)

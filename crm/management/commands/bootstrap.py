@@ -10,9 +10,9 @@ class Command(BaseCommand):
             group, _ = Group.objects.get_or_create(name=name)
             perms = Permission.objects.filter(content_type__app_label="crm")
             if name in ("Менеджер", "РОП"):
-                perms = perms.exclude(codename="view_finance").exclude(
-                    content_type__model="auditevent"
-                )
+                perms = perms.exclude(
+                    codename__in=["view_finance", "manage_employees"]
+                ).exclude(content_type__model="auditevent")
                 if name == "Менеджер":
                     perms = perms.exclude(codename__startswith="delete_")
             elif name == "Инженер":
@@ -42,5 +42,5 @@ class Command(BaseCommand):
                 perms = perms.exclude(codename="view_finance")
             group.permissions.set(perms)
         self.stdout.write(
-            "Роли обновлены. Роли назначаются через Django shell; обычные пользователи не управляют правами."
+            "Роли обновлены. Создание сотрудников доступно директору и администратору в настройках."
         )

@@ -33,7 +33,10 @@ class Company(Named):
     financial_notes = models.TextField("Финансовая информация", blank=True)
 
     class Meta(Named.Meta):
-        permissions = [("view_finance", "Просмотр и изменение финансовой информации")]
+        permissions = [
+            ("view_finance", "Просмотр и изменение финансовой информации"),
+            ("manage_employees", "Создание сотрудников и назначение ролей"),
+        ]
 
 
 class Contact(Named):
@@ -49,11 +52,78 @@ class Contact(Named):
 
 
 class Chain(Named):
-    pass
+    companies = models.ManyToManyField(
+        Company,
+        blank=True,
+        related_name="chains",
+        verbose_name="Клиенты (юридические лица)",
+    )
+
+    def validate_companies(self, ids):
+        from django.core.exceptions import ValidationError
+
+        if (
+            self.pk
+            and Store.objects.filter(chain=self, company__isnull=False)
+            .exclude(company_id__in=ids)
+            .exists()
+        ):
+            raise ValidationError(
+                {
+                    "companies": "Юридическое лицо используется магазином этой сети. Сначала измените клиента в магазине."
+                }
+            )
+
+
+def region_key(name):
+    return "".join(name.split()).casefold()
 
 
 class Region(Named):
-    chain = models.ForeignKey(Chain, on_delete=models.CASCADE, verbose_name="Сеть")
+    normalized_name = models.CharField(
+        max_length=255, unique=True, null=True, blank=True, editable=False
+    )
+    canonical = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="legacy_aliases",
+        editable=False,
+    )
+    legacy_data = models.JSONField(default=dict, blank=True, editable=False)
+
+    class Meta(Named.Meta):
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(canonical__isnull=True, normalized_name__isnull=False)
+                    | models.Q(canonical__isnull=False, normalized_name__isnull=True)
+                ),
+                name="region_canonical_key",
+            )
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        self.name = " ".join(self.name.split())
+        if not self.name:
+            raise ValidationError({"name": "Введите название региона"})
+        self.normalized_name = None if self.canonical_id else region_key(self.name)
+        duplicate = Region.objects.filter(normalized_name=self.normalized_name).exclude(
+            pk=self.pk
+        )
+        if self.normalized_name and duplicate.exists():
+            raise ValidationError(
+                {
+                    "name": "Регион с таким названием уже существует (регистр и пробелы не учитываются)"
+                }
+            )
+
+    def save(self, *args, **kwargs):
+        self.normalized_name = None if self.canonical_id else region_key(self.name)
+        return super().save(*args, **kwargs)
 
 
 class StoreFormat(Named):
@@ -61,6 +131,14 @@ class StoreFormat(Named):
 
 
 class Store(Named):
+    company = models.ForeignKey(
+        Company,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="stores",
+        verbose_name="Клиент (юридическое лицо)",
+    )
     chain = models.ForeignKey(Chain, on_delete=models.PROTECT, verbose_name="Сеть")
     region = models.ForeignKey(
         Region, null=True, blank=True, on_delete=models.PROTECT, verbose_name="Регион"
@@ -83,10 +161,17 @@ class Store(Named):
     def clean(self):
         from django.core.exceptions import ValidationError
 
-        for field in ("region", "format"):
-            value = getattr(self, field)
-            if value and value.chain_id != self.chain_id:
-                raise ValidationError({field: "Выберите значение из той же сети"})
+        if self.format_id and self.format.chain_id != self.chain_id:
+            raise ValidationError({"format": "Выберите формат из той же сети"})
+        if self.company_id and (
+            not self.chain_id
+            or not self.chain.companies.filter(pk=self.company_id).exists()
+        ):
+            raise ValidationError(
+                {"company": "Юридическое лицо не связано с выбранной торговой сетью"}
+            )
+        if self.region_id and self.region.canonical_id:
+            raise ValidationError({"region": "Выберите регион из общего справочника"})
 
 
 class Project(Named):

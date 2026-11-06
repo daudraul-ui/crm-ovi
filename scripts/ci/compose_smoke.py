@@ -179,6 +179,19 @@ def main():
     compose(SOURCE, "up", "-d", "--no-build", "--wait", "--wait-timeout", "180")
     print(app(SOURCE, "seed"))
     proxy_checks(SOURCE)
+    if os.getenv("CRM_BROWSER_SMOKE") == "1":
+        fixture_file = WORK / "browser-fixtures.json"
+        fixture_file.write_text(app(SOURCE, "browser-fixtures"))
+        fixture_file.chmod(0o600)
+        subprocess.run(
+            ["node", "scripts/ci/task0011_browser.cjs"],
+            check=True,
+            env=dict(
+                os.environ,
+                CRM_BROWSER_FIXTURES=str(fixture_file),
+                CRM_BROWSER_URL="http://127.0.0.1:18080",
+            ),
+        )
     expected = app(SOURCE, "manifest")
     compose(SOURCE, "stop", "web", "worker", "beat")
     subprocess.run(
