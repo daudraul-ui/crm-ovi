@@ -126,3 +126,13 @@ CONFIRM_RESTORE=YES scripts/restore.sh backups/manual
 - `Dockerfile`, `compose.yaml`, `Caddyfile`, `.env.example`, `scripts/`: runtime и обслуживание.
 
 Изменения предназначены для PR в main; автоматическое слияние не выполняется.
+
+## Отдельная интеграционная проверка Compose
+
+Workflow `.github/workflows/compose.yml` (`Compose integration`) работает на временном GitHub-hosted Ubuntu runner. Использует основной `compose.yaml` плюс `compose.ci.yaml`: те же образы и процессы, но HTTP Caddy на loopback-портах 18080/18081, один процесс worker, интервал Beat 5 секунд вместо 300. `DEBUG=0`, локальные статические файлы обслуживает WhiteNoise через Caddy/Gunicorn. Публичный домен не требуется; TLS здесь не проверяется.
+
+Сценарий `scripts/ci/compose_smoke.py` запускает web, PostgreSQL, Redis, Worker, Beat и Caddy, проверяет healthchecks, миграции, статические файлы по SHA-256, закрытые URL, сессию с подтверждённой 2FA, скачивание документа, реальный запуск задачи worker и отдельное планирование Beat. Затем останавливает запись в исходном тестовом проекте, вызывает `backup.sh`, восстанавливает PostgreSQL и media через `restore.sh` в другом новом проекте, сверяет записи, связи и SHA-256 каждого media-файла; повторно проверяет исходный проект. Рабочие и production-данные не используются. В сценарии нет очистки Docker/томов; временные ресурсы исчезают при завершении runner. В artifacts попадают только диагностические `.log`, не `.env`, архивы или cookies.
+
+Параметры Compose для изоляции: `CRM_ENV_FILE` (по умолчанию `.env`), `CRM_IMAGE`, `CRM_BIND_ADDRESS`, `CRM_HTTP_PORT`, `CRM_HTTPS_PORT`, стандартные `COMPOSE_PROJECT_NAME` / `COMPOSE_FILE`. Исходный и восстановленный проекты используют разные автоматически именованные volumes. `backup.sh` отказывается перезаписывать существующий каталог резервной копии. Не запускайте destructive restore на рабочей БД ради проверки: используйте новый проект/сервер. Скрипт CI намеренно отказывается запускаться вне GitHub Actions.
+
+TLS на VPS проверяется отдельно после назначения DNS и доступности 80/443: получить публичный сертификат Caddy, проверить `https://<домен>/health/` с обычной проверкой цепочки доверия, HTTP→HTTPS redirect, вход/2FA и Secure cookies, CSRF и защищённое скачивание. Результат CI с HTTP не подтверждает эту часть.

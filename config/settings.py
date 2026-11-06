@@ -96,7 +96,10 @@ REST_FRAMEWORK = {
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 CELERY_BEAT_SCHEDULE = {
-    "overdue": {"task": "crm.tasks.notify_overdue", "schedule": 300.0}
+    "overdue": {
+        "task": "crm.tasks.notify_overdue",
+        "schedule": float(os.getenv("OVERDUE_NOTIFICATION_INTERVAL", "300")),
+    }
 }
 DATA_UPLOAD_MAX_MEMORY_SIZE = 12 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024
