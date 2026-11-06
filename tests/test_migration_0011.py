@@ -6,7 +6,7 @@ from django.db.migrations.executor import MigrationExecutor
 @pytest.mark.django_db(transaction=True)
 def test_region_migration_preserves_records_and_store_links():
     old_target = [("crm", "0001_initial")]
-    new_target = [("crm", "0002_alter_company_options_remove_region_chain_and_more")]
+    new_target = [("crm", "0004_finalize_global_regions")]
     executor = MigrationExecutor(connection)
     executor.migrate(old_target)
     old = executor.loader.project_state(old_target).apps
