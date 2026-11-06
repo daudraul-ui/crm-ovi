@@ -1,0 +1,11 @@
+.venv/
+work/
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+private_media/
+staticfiles/
+node_modules/
+backups/
+*.sqlite3

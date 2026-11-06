@@ -1,0 +1,1 @@
+{"private":true,"scripts":{"build":"tailwindcss -i static/input.css -o work/tailwind.css --minify && cat work/tailwind.css static/custom.css > static/app.css"},"devDependencies":{"@tailwindcss/cli":"4.1.18","playwright":"1.65.0","tailwindcss":"4.1.18"}}

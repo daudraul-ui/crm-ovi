@@ -1,0 +1,23 @@
+{% extends 'base.html' %}{% load static %}
+{% block content %}
+<h1>{{ title }}</h1>
+<section class="card form-card">
+  <form id="resource-form" method="post" enctype="multipart/form-data" {% if kind == 'stores' %}data-store-form data-options-url="{% url 'store_options' %}" data-format-url="{% url 'store_format_create' %}"{% endif %}>
+    {% csrf_token %}{{ form.as_p }}
+    {% if quick_format %}<p><button id="add-format" type="button">+ Новый формат для выбранной сети</button></p>{% endif %}
+    {% if kind == 'stores' %}<p id="store-options-error" class="error" role="alert"></p>{% endif %}
+    <button class="primary" type="submit">Сохранить</button> <a href="javascript:history.back()">Отмена</a>
+  </form>
+</section>
+{% if quick_format %}
+<dialog id="format-dialog" aria-labelledby="format-dialog-title">
+  <h2 id="format-dialog-title">Новый формат</h2>
+  <p>Формат будет добавлен к выбранной торговой сети. Поля магазина сохранятся.</p>
+  <label for="format-name">Название формата</label><input id="format-name" maxlength="255" autocomplete="off">
+  <p id="format-error" class="error" role="alert"></p>
+  <button id="save-format" class="primary" type="button">Создать формат</button>
+  <button id="cancel-format" type="button">Вернуться к магазину</button>
+</dialog>
+{% endif %}
+{% if kind == 'stores' %}<script defer src="{% static 'store-form.js' %}"></script>{% endif %}
+{% endblock %}

@@ -1,0 +1,29 @@
+name: Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: crm
+          POSTGRES_PASSWORD: crm
+          POSTGRES_DB: crm
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U crm" --health-interval 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://crm:crm@localhost:5432/crm
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      DEBUG: '1'
+      TESTING: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python manage.py migrate --noinput
+      - run: python manage.py makemigrations --check --dry-run
+      - run: python manage.py check
+      - run: pytest
