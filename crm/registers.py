@@ -127,6 +127,9 @@ def context(model, request):
         "total": page.paginator.count,
         "querystring": params.urlencode(),
         "filters": options,
+        "statuses": model._meta.get_field("status").choices
+        if model in (Project, Task)
+        else [],
         "sorts": STORE_COLUMNS
         if model is Store
         else [

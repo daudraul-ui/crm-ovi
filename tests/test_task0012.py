@@ -50,6 +50,59 @@ def resolve(job):
     return job.preview
 
 
+def test_import_answers_reference_provisional_objects_across_sequence_changes(
+    user, tmp_path, settings
+):
+    from crm.models import Region, StoreFormat
+
+    first = dict(
+        chain="Fresh chain",
+        company="Fresh client",
+        manager=user.username,
+        code="001",
+        name="First",
+        address="Address",
+        region="Fresh region",
+        format="Fresh format",
+    )
+    job = make_job(
+        user,
+        tmp_path,
+        settings,
+        [
+            first,
+            dict(chain="Fresh chain", code="002", name="Second", address="Address"),
+        ],
+    )
+    for _ in range(5):
+        job.preview = analyze(job)
+        if not job.preview["questions"]:
+            break
+        for question in job.preview["questions"]:
+            assert any(str(v).startswith("new:") for v, label in question["options"]), (
+                job.preview
+            )
+            job.answers[question["key"]] = next(
+                str(value)
+                for value, label in question["options"]
+                if str(value).startswith("new:")
+            )
+        # Force different temporary IDs on SQLite as PostgreSQL sequences do naturally.
+        unrelated = Chain.objects.create(name="Unrelated " + str(_))
+        Company.objects.create(name="Unrelated " + str(_), manager=user)
+        Region.objects.create(name="Unrelated " + str(_))
+        StoreFormat.objects.create(name="Unrelated " + str(_), chain=unrelated)
+    assert not job.preview["questions"]
+    assert not job.preview["errors"]
+    analyze(job, commit=True)
+    first_store, second_store = Store.objects.filter(
+        chain__name="Fresh chain"
+    ).order_by("code")
+    assert first_store.company_id == second_store.company_id
+    assert first_store.region_id == second_store.region_id
+    assert first_store.format_id == second_store.format_id
+
+
 def test_protect_m2m_and_archive(verified, company, user):
     chain = Chain.objects.create(name="Сеть")
     store = Store.objects.create(

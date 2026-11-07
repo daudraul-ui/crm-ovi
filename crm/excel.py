@@ -99,6 +99,10 @@ class Analyzer:
         self.changes = []
         self.counts = Counter()
         self.cache = {}
+        self.provisional = {}
+
+    def token(self, obj):
+        return self.provisional.get((obj._meta.label, obj.pk), str(obj.pk))
 
     def question(self, key, title, options):
         key = hashlib.sha256(key.encode()).hexdigest()[:24]
@@ -130,7 +134,7 @@ class Analyzer:
         if len(exact) == 1:
             result = exact[0]
         elif exact or similar:
-            options = [(str(o.pk), o.name) for o in exact or similar] + [
+            options = [(self.token(o), o.name) for o in exact or similar] + [
                 ("skip", "Пропустить строки")
             ]
             if not exact:
@@ -140,7 +144,9 @@ class Analyzer:
             )
             if choice == "skip":
                 raise Pending
-            result = next((o for o in exact or similar if str(o.pk) == choice), None)
+            result = next(
+                (o for o in exact or similar if self.token(o) == choice), None
+            )
         else:
             result = None
         self.cache[key] = result
@@ -149,6 +155,15 @@ class Analyzer:
     def created(self, kind, obj):
         obj.full_clean()
         obj.save()
+        identity = (
+            obj._meta.label,
+            obj.name,
+            getattr(obj, "inn", ""),
+            str(getattr(obj, "chain", "")),
+        )
+        self.provisional[(obj._meta.label, obj.pk)] = (
+            "new:" + hashlib.sha256(repr(identity).encode()).hexdigest()
+        )
         self.counts[kind] += 1
         self.changes.append({"action": "create", "kind": kind, "name": str(obj)})
         audit(self.job.user, "import", obj)
@@ -170,10 +185,10 @@ class Analyzer:
                 choice = self.question(
                     "inn:" + data["inn"],
                     "Несколько клиентов с ИНН " + data["inn"],
-                    [(str(o.pk), o.name) for o in matches]
+                    [(self.token(o), o.name) for o in matches]
                     + [("skip", "Отложить строки")],
                 )
-                company = next((o for o in matches if str(o.pk) == choice), None)
+                company = next((o for o in matches if self.token(o) == choice), None)
                 if company is None:
                     raise Pending
             elif matches:
@@ -271,7 +286,7 @@ class Analyzer:
         if chain is None:
             raise ValueError("Для магазина обязательна торговая сеть.")
         if company is None:
-            options = [(str(c.pk), c.name) for c in chain.companies.all()] + [
+            options = [(self.token(c), c.name) for c in chain.companies.all()] + [
                 ("blank", "Оставить клиента пустым"),
                 ("skip", "Пропустить строки"),
             ]
@@ -282,7 +297,11 @@ class Analyzer:
             )
             if choice == "skip":
                 raise Pending
-            company = chain.companies.get(pk=choice) if choice != "blank" else None
+            company = (
+                next(c for c in chain.companies.all() if self.token(c) == choice)
+                if choice != "blank"
+                else None
+            )
         references = {}
         for field, model in [("region", Region), ("format", StoreFormat)]:
             extra = (
@@ -302,9 +321,17 @@ class Analyzer:
                     field + ":blank:" + (chain.name if field == "format" else ""),
                     HEADERS[field] + " не указан",
                     [("blank", "Оставить пустым")]
-                    + [(str(o.pk), o.name) for o in model.objects.filter(**extra)],
+                    + [(self.token(o), o.name) for o in model.objects.filter(**extra)],
                 )
-                obj = None if choice == "blank" else model.objects.get(pk=choice)
+                obj = (
+                    None
+                    if choice == "blank"
+                    else next(
+                        o
+                        for o in model.objects.filter(**extra)
+                        if self.token(o) == choice
+                    )
+                )
             references[field] = obj
         existing = Store.objects.filter(chain=chain, code=data["code"]).first()
         values = {

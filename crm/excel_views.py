@@ -31,6 +31,22 @@ MODELS = {
     "stores": Store,
 }
 
+COUNT_LABELS = {
+    "rows": "Строки",
+    "companies": "Новые клиенты",
+    "chains": "Новые сети",
+    "regions": "Новые регионы",
+    "formats": "Новые форматы",
+    "stores": "Новые магазины",
+    "contacts": "Новые контакты",
+    "links": "Новые связи",
+    "updates": "Обновления",
+    "skips": "Пропущено",
+    "pending_or_skipped": "Ожидают решения или отложены",
+    "errors": "Ошибки",
+    "questions": "Вопросы",
+}
+
 
 def require_import(user):
     if not all(
@@ -164,6 +180,11 @@ def import_excel(request, job_id=None):
                     "editable_rows": editable_rows,
                     "page": page,
                     "changes_page": changes_page,
+                    "visible_questions": preview.get("questions", [])[:50],
+                    "count_labels": [
+                        (COUNT_LABELS.get(key, key), value)
+                        for key, value in preview.get("counts", {}).items()
+                    ],
                 },
             )
     except (ValueError, ValidationError, OSError) as exc:
