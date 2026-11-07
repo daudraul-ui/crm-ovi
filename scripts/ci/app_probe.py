@@ -1,6 +1,8 @@
 """Executed inside the CI web container. Never run against production data."""
 
+import base64
 import hashlib
+import io
 import json
 import os
 import secrets
@@ -136,7 +138,9 @@ def manifest():
         for p in sorted(root.rglob("*"))
         if p.is_file()
     }
-    assert len(data) == 2, f"Expected exactly two isolated CI files, got {len(data)}"
+    assert len(data) >= 2, (
+        f"Expected fixture files and protected import sources, got {len(data)}"
+    )
     print(json.dumps(data, sort_keys=True))
 
 
@@ -154,6 +158,35 @@ def browser_fixtures():
     session = client.session
     session["otp_device_id"] = user.totpdevice_set.get(confirmed=True).persistent_id
     session.save()
+    from openpyxl import Workbook
+
+    book = Workbook()
+    book.active.append(
+        [
+            "Торговая сеть",
+            "Клиент",
+            "Менеджер",
+            "Номер (КОД)",
+            "Название",
+            "Адрес",
+            "Регион",
+            "Формат",
+        ]
+    )
+    book.active.append(
+        [
+            "Импорт сеть " + suffix,
+            "Импорт ЮЛ " + suffix,
+            user.username,
+            "IMPORT-00001",
+            "Импорт магазин",
+            "Москва",
+            "Москва импорт",
+            "Импорт формат",
+        ]
+    )
+    stream = io.BytesIO()
+    book.save(stream)
     print(
         json.dumps(
             {
@@ -165,6 +198,7 @@ def browser_fixtures():
                 "other_chain": chain.pk,
                 "other_format_name": fmt.name,
                 "region": region.pk,
+                "import_xlsx": base64.b64encode(stream.getvalue()).decode(),
             }
         )
     )

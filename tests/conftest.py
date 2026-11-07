@@ -27,5 +27,5 @@ def verified(client, user):
 @pytest.fixture
 def company(user):
     return Company.objects.create(
-        name="Клиент", inn="7701234567", manager=user, financial_notes="Секрет"
+        name="Клиент", inn="7707083893", manager=user, financial_notes="Секрет"
     )

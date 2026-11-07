@@ -183,15 +183,18 @@ def main():
         fixture_file = WORK / "browser-fixtures.json"
         fixture_file.write_text(app(SOURCE, "browser-fixtures"))
         fixture_file.chmod(0o600)
-        subprocess.run(
-            ["node", "scripts/ci/task0011_browser.cjs"],
-            check=True,
-            env=dict(
-                os.environ,
-                CRM_BROWSER_FIXTURES=str(fixture_file),
-                CRM_BROWSER_URL="http://127.0.0.1:18080",
-            ),
-        )
+        for engine in ("chromium", "firefox"):
+            for script in ("task0011_browser.cjs", "task0012_browser.cjs"):
+                subprocess.run(
+                    ["node", "scripts/ci/" + script],
+                    check=True,
+                    env=dict(
+                        os.environ,
+                        CRM_BROWSER_FIXTURES=str(fixture_file),
+                        CRM_BROWSER_URL="http://127.0.0.1:18080",
+                        CRM_BROWSER_ENGINE=engine,
+                    ),
+                )
     expected = app(SOURCE, "manifest")
     compose(SOURCE, "stop", "web", "worker", "beat")
     subprocess.run(

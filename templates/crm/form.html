@@ -2,7 +2,7 @@
 {% block content %}
 <h1>{{ title }}</h1>
 <section class="card form-card">
-  <form id="resource-form" method="post" enctype="multipart/form-data" {% if kind == 'stores' %}data-store-form data-options-url="{% url 'store_options' %}" data-format-url="{% url 'store_format_create' %}"{% endif %}>
+  <form id="resource-form" data-kind="{{ kind }}" method="post" enctype="multipart/form-data" {% if kind == 'stores' %}data-store-form data-options-url="{% url 'store_options' %}" data-format-url="{% url 'store_format_create' %}"{% endif %}>
     {% csrf_token %}{{ form.as_p }}
     {% if quick_format %}<p><button id="add-format" type="button">+ Новый формат для выбранной сети</button></p>{% endif %}
     {% if kind == 'stores' %}<p id="store-options-error" class="error" role="alert"></p>{% endif %}
@@ -20,4 +20,4 @@
 </dialog>
 {% endif %}
 {% if kind == 'stores' %}<script defer src="{% static 'store-form.js' %}"></script>{% endif %}
-{% endblock %}
+<script defer src="{% static 'reference-search.js' %}"></script>{% endblock %}

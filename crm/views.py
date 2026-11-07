@@ -1,18 +1,14 @@
-import io
-
 from django.contrib.auth import get_user_model, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.forms import AuthenticationForm
-from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Q
 from django.http import FileResponse, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 from django_otp import login as otp_login
 from django_otp.plugins.otp_totp.models import TOTPDevice
-from openpyxl import load_workbook
 
 from .forms import LABELS, MODELS, EmployeeForm, form_class
 from .models import (
@@ -28,7 +24,6 @@ from .models import (
     Store,
     StoreFormat,
     Task,
-    region_key,
 )
 from .security import allowed
 from .services import assigned, audit, snapshot
@@ -82,7 +77,23 @@ def sign_out(request):
 
 @login_required
 def two_factor(request):
+    from django.core.cache import cache
+
+    from .recovery import recover
+
+    key = f"2fa-recovery:{request.user.pk}"
+    if request.method == "POST" and request.POST.get("recovery_code"):
+        attempts = cache.get(key, 0)
+        if attempts >= 5:
+            return HttpResponse(
+                "Слишком много попыток. Повторите через 15 минут.", status=429
+            )
+        cache.set(key, attempts + 1, 900)
+        if recover(request, request.POST["recovery_code"].strip()):
+            return redirect("two_factor")
+        return HttpResponse("Неверный резервный код.", status=400)
     with transaction.atomic():
+        get_user_model().objects.select_for_update().get(pk=request.user.pk)
         device = (
             TOTPDevice.objects.select_for_update().filter(user=request.user).first()
         )
@@ -92,6 +103,7 @@ def two_factor(request):
             )
         error = None
         if request.method == "POST":
+            first_setup = not device.confirmed
             if device.verify_token(request.POST.get("token", "")):
                 device.confirmed = True
                 device.save()
@@ -102,6 +114,15 @@ def two_factor(request):
                     model="auth.User",
                     object_id=str(request.user.pk),
                 )
+                if first_setup:
+                    from .recovery import generate_codes
+
+                    codes = generate_codes(request.user)
+                    response = render(
+                        request, "registration/recovery_codes.html", {"codes": codes}
+                    )
+                    response["Cache-Control"] = "no-store"
+                    return response
                 return redirect("dashboard")
             error = "Неверный код или слишком много попыток. Подождите и повторите."
     return render(
@@ -128,14 +149,33 @@ def dashboard(request):
     projects = (
         Project.objects.exclude(status__in=["done", "paused"]).select_related(
             "company", "manager"
-        )[:6]
+        )
         if allowed(request.user, Project)
-        else []
+        else Project.objects.none()
     )
+    employee = request.GET.get("employee", "")
+    if employee.isascii() and employee.isdigit():
+        overdue = overdue.filter(assignee_id=employee)
+        projects = projects.filter(manager_id=employee)
+    for key, lookup in [("from", "due_at__date__gte"), ("to", "due_at__date__lte")]:
+        if request.GET.get(key):
+            from django.utils.dateparse import parse_date
+
+            try:
+                date = parse_date(request.GET[key])
+            except ValueError:
+                date = None
+            if date:
+                overdue = overdue.filter(**{lookup: date})
     return render(
         request,
         "crm/dashboard.html",
-        {"counts": counts, "overdue": overdue, "projects": projects},
+        {
+            "counts": counts,
+            "overdue": overdue[:50],
+            "projects": projects[:20],
+            "employees": get_user_model().objects.filter(is_active=True),
+        },
     )
 
 
@@ -143,50 +183,21 @@ def listing(request, kind):
     model = MODELS.get(kind)
     if not model or not allowed(request.user, model):
         raise PermissionDenied
-    objects = (
-        model.objects.filter(canonical__isnull=True)
-        if model is Region
-        else model.objects.all()
-    )
-    query = request.GET.get("q", "")
-    if query:
-        objects = (
-            objects.filter(name__icontains=query)
-            if hasattr(model, "name")
-            else objects.none()
-        )
-    if kind == "companies":
-        if query:
-            objects = model.objects.filter(
-                Q(name__icontains=query) | Q(inn__icontains=query)
-            )
-        if request.GET.get("manager"):
-            objects = (
-                objects.filter(manager_id=request.GET["manager"])
-                if request.GET["manager"].isascii() and request.GET["manager"].isdigit()
-                else objects.none()
-            )
-    if kind == "stores" and request.GET.get("chain"):
-        objects = (
-            objects.filter(chain_id=request.GET["chain"])
-            if request.GET["chain"].isascii() and request.GET["chain"].isdigit()
-            else objects.none()
-        )
-    if kind in ("projects", "tasks") and request.GET.get("status"):
-        objects = objects.filter(status=request.GET["status"])
-    return render(
-        request,
-        "crm/list.html",
+    from .registers import context
+
+    data = context(model, request)
+    data.update(
         {
-            "objects": objects[:200],
             "kind": kind,
             "title": LABELS[kind],
             "can_add": allowed(request.user, model, "add"),
             "can_change": allowed(request.user, model, "change"),
-        },
+        }
     )
+    return render(request, "crm/list.html", data)
 
 
+@transaction.atomic
 def edit(request, kind, pk=None):
     model = MODELS.get(kind)
     if not model or not allowed(request.user, model, "change" if pk else "add"):
@@ -196,11 +207,22 @@ def edit(request, kind, pk=None):
         if model is Region
         else model.objects.all()
     )
-    obj = get_object_or_404(queryset, pk=pk) if pk else None
+    obj = get_object_or_404(queryset.select_for_update(), pk=pk) if pk else None
     before = snapshot(obj)
     previous_assignee = obj.assignee_id if isinstance(obj, Task) else None
     form = form_class(model, request.user)(
-        request.POST or None, request.FILES or None, instance=obj
+        request.POST or None,
+        request.FILES or None,
+        instance=obj,
+        initial={
+            key: request.GET[key]
+            for key in ("company", "project")
+            if key in request.GET
+            and key in [f.name for f in model._meta.fields]
+            and request.GET[key].isdigit()
+        }
+        if not pk
+        else None,
     )
     if request.method == "POST" and form.is_valid():
         with transaction.atomic():
@@ -245,8 +267,8 @@ def delete(request, kind, pk):
         with transaction.atomic():
             audit(request.user, "delete", obj, snapshot(obj))
             obj.delete()
-    except ProtectedError:
-        return HttpResponseBadRequest("Объект используется другими записями")
+    except ProtectedError as exc:
+        return HttpResponseBadRequest(str(exc.args[0]))
     return redirect("listing", kind=kind)
 
 
@@ -304,77 +326,6 @@ def settings_view(request):
             else None,
         },
     )
-
-
-def import_stores(request):
-    if not allowed(request.user, Store, "add"):
-        raise PermissionDenied
-    error = None
-    if request.method == "POST":
-        upload = request.FILES.get("file")
-        try:
-            if not upload or upload.size > 2 * 1024 * 1024:
-                raise ValueError("Ожидается XLSX до 2 МБ")
-            from zipfile import ZipFile
-
-            data = upload.read()
-            with ZipFile(io.BytesIO(data)) as archive:
-                if sum(i.file_size for i in archive.infolist()) > 20 * 1024 * 1024:
-                    raise ValueError("Слишком большой распакованный файл")
-            book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-            with transaction.atomic():
-                rows = book.active.iter_rows(values_only=True)
-                if tuple(next(rows)) != (
-                    "Сеть",
-                    "Код",
-                    "Название",
-                    "Адрес",
-                    "Регион",
-                    "Формат",
-                ):
-                    raise ValueError("Неверные заголовки")
-                for index, row in enumerate(rows, 2):
-                    if index > 1001:
-                        raise ValueError("Максимум 1000 строк")
-                    chain_name, code, name, address, region_name, format_name = row
-                    chain = Chain.objects.get(name=chain_name)
-                    region = (
-                        Region.objects.get(
-                            normalized_name=region_key(region_name),
-                            canonical__isnull=True,
-                        )
-                        if region_name
-                        else None
-                    )
-                    fmt = (
-                        StoreFormat.objects.get(chain=chain, name=format_name)
-                        if format_name
-                        else None
-                    )
-                    obj = Store(
-                        chain=chain,
-                        code=str(code or ""),
-                        name=name or "",
-                        address=address or "",
-                        region=region,
-                        format=fmt,
-                    )
-                    obj.full_clean()
-                    obj.save()
-                    audit(request.user, "import", obj)
-            book.close()
-            return redirect("listing", kind="stores")
-        except (
-            ValueError,
-            ValidationError,
-            Chain.DoesNotExist,
-            Region.DoesNotExist,
-            StoreFormat.DoesNotExist,
-            __import__("zipfile").BadZipFile,
-            __import__("xml.etree.ElementTree", fromlist=["ParseError"]).ParseError,
-        ) as exc:
-            error = f"Импорт отменён: {exc}"
-    return render(request, "crm/import.html", {"error": error})
 
 
 def detail(request, kind, pk):
@@ -437,7 +388,23 @@ def detail(request, kind, pk):
             "comments": comments,
             "contacts": contacts,
             "events": events,
-            "stores": obj.stores.all() if isinstance(obj, Project) else [],
+            "stores": obj.stores.all()
+            if isinstance(obj, Project)
+            else Store.objects.filter(chain=obj)[:50]
+            if isinstance(obj, Chain) and allowed(request.user, Store)
+            else [],
+            "formats": StoreFormat.objects.filter(chain=obj)
+            if isinstance(obj, Chain) and allowed(request.user, StoreFormat)
+            else [],
+            "store_count": Store.objects.filter(chain=obj).count()
+            if isinstance(obj, Chain) and allowed(request.user, Store)
+            else None,
+            "project_tasks": Task.objects.filter(project=obj)[:50]
+            if isinstance(obj, Project) and allowed(request.user, Task)
+            else [],
+            "additional_companies": obj.additional_companies.all()
+            if isinstance(obj, Project) and allowed(request.user, Company)
+            else [],
             "companies": obj.companies.all()
             if isinstance(obj, Chain) and allowed(request.user, Company)
             else [],
@@ -512,3 +479,80 @@ def store_format_create(request):
     return JsonResponse(
         {"id": fmt.pk, "name": fmt.name, "chain": fmt.chain_id}, status=201
     )
+
+
+@require_POST
+@transaction.atomic
+def archive(request, kind, pk):
+    from .models import Named
+
+    model = MODELS.get(kind)
+    if (
+        not model
+        or not issubclass(model, Named)
+        or not allowed(request.user, model, "change")
+    ):
+        raise PermissionDenied
+    obj = get_object_or_404(model.objects.select_for_update(), pk=pk)
+    if str(obj.version) != request.POST.get("version"):
+        return HttpResponse("Запись изменилась. Обновите карточку.", status=409)
+    before = snapshot(obj)
+    obj.archived = request.POST.get("archived") == "1"
+    obj.save()
+    audit(request.user, "archive" if obj.archived else "restore", obj, before)
+    return redirect("detail", kind=kind, pk=pk)
+
+
+@require_GET
+def reference_options(request, kind):
+    from django.db.models import Q
+
+    if kind == "employees":
+        if not any(
+            allowed(request.user, m, action)
+            for m in (Company, Project, Task)
+            for action in ("add", "change")
+        ):
+            raise PermissionDenied
+        qs = get_user_model().objects.filter(is_active=True)
+        if request.GET.get("field") == "manager":
+            qs = qs.filter(groups__name__in=["Директор", "РОП", "Менеджер"]).distinct()
+        q = request.GET.get("q", "")
+        qs = qs.filter(
+            Q(username__icontains=q)
+            | Q(first_name__icontains=q)
+            | Q(last_name__icontains=q)
+        )[:50]
+        return JsonResponse(
+            {
+                "items": [
+                    {
+                        "id": u.pk,
+                        "name": f"{u.get_full_name()} ({u.username})"
+                        if u.get_full_name()
+                        else u.username,
+                    }
+                    for u in qs
+                ]
+            }
+        )
+    model = MODELS.get(kind)
+    if model is None or not allowed(request.user, model):
+        raise PermissionDenied
+    qs = model.objects.all()
+    if hasattr(model, "archived"):
+        qs = qs.filter(archived=False)
+    if model is Region:
+        qs = qs.filter(canonical__isnull=True)
+    chain = request.GET.get("chain", "")
+    if request.GET.get("context") == "stores" and model in (Company, StoreFormat):
+        if not chain.isascii() or not chain.isdigit():
+            return JsonResponse({"items": []})
+        qs = (
+            qs.filter(chains__pk=chain)
+            if model is Company
+            else qs.filter(chain_id=chain)
+        )
+    if hasattr(model, "name"):
+        qs = qs.filter(name__icontains=request.GET.get("q", ""))
+    return JsonResponse({"items": [{"id": o.pk, "name": str(o)} for o in qs[:50]]})

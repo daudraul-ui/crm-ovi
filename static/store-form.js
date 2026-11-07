@@ -15,6 +15,7 @@
     if (pending) pending.abort();
     pending = new AbortController();
     const selected = chain.value;
+    const hadSelection = Boolean(company?.value || format.value);
     replaceOptions(company, []);
     replaceOptions(format, []);
     error.textContent = '';
@@ -27,6 +28,14 @@
       if (chain.value !== selected) return;
       replaceOptions(company, data.companies);
       replaceOptions(format, data.formats);
+      if (hadSelection) error.textContent = 'Сеть изменена: проверьте клиента и формат магазина. ';
+      if (company && !data.companies.length && selected) {
+        error.append(document.createTextNode('У сети нет связанных клиентов. '));
+        const link = document.createElement('a');
+        link.href = `/chains/${encodeURIComponent(selected)}/edit/`;
+        link.textContent = 'Изменить торговую сеть';
+        error.append(link);
+      }
     } catch (e) {
       if (e.name !== 'AbortError') error.textContent = e.message;
     }

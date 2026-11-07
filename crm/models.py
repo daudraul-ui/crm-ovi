@@ -6,8 +6,32 @@ from django.core.validators import FileExtensionValidator, RegexValidator
 from django.db import models
 
 
-class Named(models.Model):
+class ConcurrentRecord(models.Model):
+    version = models.PositiveIntegerField(default=1, editable=False)
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+        from django.db import transaction
+
+        with transaction.atomic():
+            if self.pk and not self._state.adding:
+                current = type(self).objects.select_for_update().get(pk=self.pk)
+                if current.version != self.version:
+                    raise ValidationError(
+                        "Запись изменена другим сотрудником. Обновите карточку и повторите изменения."
+                    )
+                self.version += 1
+                if kwargs.get("update_fields") is not None:
+                    kwargs["update_fields"] = set(kwargs["update_fields"]) | {"version"}
+            return super().save(*args, **kwargs)
+
+    class Meta:
+        abstract = True
+
+
+class Named(ConcurrentRecord):
     name = models.CharField("Название", max_length=255)
+    archived = models.BooleanField("В архиве", default=False)
 
     class Meta:
         abstract = True
@@ -18,6 +42,29 @@ class Named(models.Model):
 
 
 class Company(Named):
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        from .integrity import validate_inn, validate_manager
+
+        validate_manager(self)
+        previous = (
+            Company.objects.filter(pk=self.pk).values_list("inn", flat=True).first()
+            if self.pk
+            else None
+        )
+        if previous == self.inn:
+            return  # Legacy identifiers are preserved until explicitly corrected.
+        validate_inn(self.inn)
+        duplicates = Company.objects.filter(inn=self.inn).exclude(pk=self.pk)
+        if self.inn and duplicates.exists():
+            raise ValidationError(
+                {
+                    "inn": "ИНН уже используется: "
+                    + ", ".join(str(c) for c in duplicates[:5])
+                }
+            )
+
     inn = models.CharField(
         "ИНН",
         max_length=12,
@@ -129,6 +176,21 @@ class Region(Named):
 class StoreFormat(Named):
     chain = models.ForeignKey(Chain, on_delete=models.CASCADE, verbose_name="Сеть")
 
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        from .integrity import name_key
+
+        if any(
+            name_key(n) == name_key(self.name)
+            for n in StoreFormat.objects.filter(chain_id=self.chain_id)
+            .exclude(pk=self.pk)
+            .values_list("name", flat=True)
+        ):
+            raise ValidationError(
+                {"name": "Формат с таким названием уже существует в этой сети."}
+            )
+
 
 class Store(Named):
     company = models.ForeignKey(
@@ -172,9 +234,35 @@ class Store(Named):
             )
         if self.region_id and self.region.canonical_id:
             raise ValidationError({"region": "Выберите регион из общего справочника"})
+        if self.pk and self.company_id:
+            for project in self.project_set.all():
+                if (
+                    self.company_id != project.company_id
+                    and not project.additional_companies.filter(
+                        pk=self.company_id
+                    ).exists()
+                ):
+                    raise ValidationError(
+                        {
+                            "company": "Клиент не согласован в связанном проекте: "
+                            + str(project)
+                        }
+                    )
 
 
 class Project(Named):
+    additional_companies = models.ManyToManyField(
+        Company,
+        blank=True,
+        related_name="additional_projects",
+        verbose_name="Дополнительные юридические лица (явное согласование)",
+    )
+
+    def clean(self):
+        from .integrity import validate_manager
+
+        validate_manager(self)
+
     class Status(models.TextChoices):
         NEW = "new", "Новый"
         ACTIVE = "active", "В работе"
@@ -222,7 +310,7 @@ class Task(Named):
         return self.status != "done" and self.due_at < timezone.now()
 
 
-class Comment(models.Model):
+class Comment(ConcurrentRecord):
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,
@@ -241,7 +329,7 @@ def private_path(instance, filename):
     return f"documents/{uuid.uuid4().hex}{Path(filename).suffix.lower()}"
 
 
-class Document(models.Model):
+class Document(Named):
     name = models.CharField("Название", max_length=255)
     company = models.ForeignKey(
         Company, null=True, blank=True, on_delete=models.PROTECT, verbose_name="Клиент"
@@ -275,6 +363,10 @@ class Document(models.Model):
             raise ValidationError("Проект принадлежит другому клиенту")
         if self.file and self.file.size > 10 * 1024 * 1024:
             raise ValidationError("Максимум 10 МБ")
+        if self.file and not self.file._committed:
+            from .file_validation import validate_upload
+
+            validate_upload(self.file)
 
 
 class Notification(models.Model):
@@ -304,3 +396,29 @@ class AuditEvent(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class RecoveryCode(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    digest = models.CharField(max_length=255)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+
+class WriteLock(models.Model):
+    """Singleton row serializes cross-entity writes, including import commits."""
+
+    name = models.CharField(max_length=30, unique=True)
+
+
+class ImportJob(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    file = models.FileField(upload_to="imports/%Y/%m/")
+    original_name = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    mode = models.CharField(max_length=20, default="create")
+    mapping = models.JSONField(default=dict)
+    answers = models.JSONField(default=dict)
+    row_overrides = models.JSONField(default=dict)
+    preview = models.JSONField(default=dict)
+    committed_at = models.DateTimeField(null=True)

@@ -59,7 +59,7 @@ def test_enrollment_verification_replay(client, user):
     device = TOTPDevice.objects.get(user=user)
     assert not device.confirmed
     token = code(device)
-    assert client.post("/2fa/", {"token": token}).url == "/"
+    assert client.post("/2fa/", {"token": token}).status_code == 200
     device.refresh_from_db()
     assert device.confirmed
     assert client.get("/").status_code == 200
@@ -109,7 +109,7 @@ def test_no_role_access(verified, user, path):
 @pytest.mark.parametrize(
     "kind,payload",
     [
-        ("companies", {"name": "Новый клиент", "inn": "1234567890"}),
+        ("companies", {"name": "Новый клиент", "inn": "7736050003"}),
         ("chains", {"name": "Сеть"}),
     ],
 )
@@ -122,7 +122,12 @@ def test_api_crud(verified, user, kind, payload):
     assert verified.get(f"/api/{kind}/{pk}/").status_code == 200
     assert (
         verified.patch(
-            f"/api/{kind}/{pk}/", {"name": "Изменено"}, content_type="application/json"
+            f"/api/{kind}/{pk}/",
+            {
+                "version": verified.get(f"/api/{kind}/{pk}/").json().get("version", 1),
+                "name": "Изменено",
+            },
+            content_type="application/json",
         ).status_code
         == 200
     )
@@ -148,21 +153,33 @@ def test_stores_projects_crud(verified, user, company):
     assert Project.objects.get(pk=pid).stores.get().pk == sid
     assert (
         verified.patch(
-            f"/api/projects/{pid}/", {"status": "done"}, content_type="application/json"
+            f"/api/projects/{pid}/",
+            {
+                "version": verified.get(f"/api/projects/{pid}/")
+                .json()
+                .get("version", 1),
+                "status": "done",
+            },
+            content_type="application/json",
         ).status_code
         == 200
     )
     assert (
         verified.patch(
             f"/api/stores/{sid}/",
-            {"address": "Новый адрес"},
+            {
+                "version": verified.get(f"/api/stores/{sid}/").json().get("version", 1),
+                "address": "Новый адрес",
+            },
             content_type="application/json",
         ).status_code
         == 200
     )
     assert (
-        verified.delete(f"/api/stores/{sid}/").status_code == 204
-    )  # M2M links removed
+        verified.delete(f"/api/stores/{sid}/").status_code == 400
+    )  # Historical project link must survive.
+    assert Project.objects.get(pk=pid).stores.filter(pk=sid).exists()
+    Project.objects.get(pk=pid).stores.clear()
     assert verified.delete(f"/api/projects/{pid}/").status_code == 204
 
 
@@ -199,7 +216,12 @@ def test_finance_protected(verified, user, company):
     assert "financial_notes" not in verified.get(f"/api/companies/{company.pk}/").json()
     response = verified.patch(
         f"/api/companies/{company.pk}/",
-        {"financial_notes": "leak"},
+        {
+            "version": verified.get(f"/api/companies/{company.pk}/")
+            .json()
+            .get("version", 1),
+            "financial_notes": "leak",
+        },
         content_type="application/json",
     )
     assert response.status_code == 403
@@ -242,7 +264,12 @@ def test_task_reassignment_history(verified, user):
     assert Task.objects.get(pk=pk).overdue
     assert (
         verified.patch(
-            f"/api/tasks/{pk}/", {"assignee": other.pk}, content_type="application/json"
+            f"/api/tasks/{pk}/",
+            {
+                "version": verified.get(f"/api/tasks/{pk}/").json().get("version", 1),
+                "assignee": other.pk,
+            },
+            content_type="application/json",
         ).status_code
         == 200
     )
@@ -331,19 +358,15 @@ def workbook(rows):
     return SimpleUploadedFile("stores.xlsx", data.getvalue())
 
 
-def test_excel_atomic(verified):
+def test_excel_upload_requires_preview(verified, tmp_path, settings):
+    settings.MEDIA_ROOT = tmp_path
     Chain.objects.create(name="Сеть")
     row = ["Сеть", "1", "Магазин", "Москва", None, None]
-    assert (
-        verified.post("/stores/import/", {"file": workbook([row, row])}).status_code
-        == 200
-    )
+    response = verified.post("/stores/import/", {"file": workbook([row, row])})
+    assert response.status_code == 302
+    assert "/excel/import/" in response.url
     assert Store.objects.count() == 0
-    assert (
-        verified.post("/stores/import/", {"file": workbook([row])}).status_code == 302
-    )
-    assert Store.objects.count() == 1
-    assert AuditEvent.objects.filter(action="import").count() == 1
+    assert not AuditEvent.objects.filter(action="import").exists()
 
 
 def test_notifications_isolated(verified, user):
@@ -358,7 +381,12 @@ def test_notifications_isolated(verified, user):
 def test_audit_redaction(verified, user, company):
     verified.patch(
         f"/api/companies/{company.pk}/",
-        {"financial_notes": "new secret"},
+        {
+            "version": verified.get(f"/api/companies/{company.pk}/")
+            .json()
+            .get("version", 1),
+            "financial_notes": "new secret",
+        },
         content_type="application/json",
     )
     event = AuditEvent.objects.get(action="update")
@@ -461,7 +489,7 @@ def test_html_create_update_delete(verified, user):
     assert (
         verified.post(
             "/companies/new/",
-            {"name": "HTML компания", "manager": user.pk, "inn": "1234567890"},
+            {"name": "HTML компания", "manager": user.pk, "inn": "7736050003"},
         ).status_code
         == 302
     )
@@ -469,7 +497,12 @@ def test_html_create_update_delete(verified, user):
     assert (
         verified.post(
             f"/companies/{obj.pk}/edit/",
-            {"name": "Изменённая компания", "manager": user.pk, "inn": "1234567890"},
+            {
+                "record_version": obj.version,
+                "name": "Изменённая компания",
+                "manager": user.pk,
+                "inn": "7736050003",
+            },
         ).status_code
         == 302
     )

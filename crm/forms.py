@@ -32,7 +32,7 @@ LABELS = {
 
 
 def form_class(model, user):
-    excluded = ["author", "uploaded_by"]
+    excluded = ["author", "uploaded_by", "archived"]
     if not user.has_perm("crm.view_finance"):
         excluded.append("financial_notes")
     if not user.has_perm("crm.view_company"):
@@ -93,18 +93,44 @@ class EmployeeChoiceField(forms.ModelChoiceField):
 
 
 class ResourceForm(forms.ModelForm):
+    record_version = forms.IntegerField(required=False, widget=forms.HiddenInput)
+
+    def _save_m2m(self):
+        if isinstance(self.instance, models.Project):
+            self.instance.additional_companies.add(
+                *self.cleaned_data.get("additional_companies", [])
+            )
+            self.instance.stores.set(self.cleaned_data.get("stores", []))
+            self.instance.additional_companies.set(
+                self.cleaned_data.get("additional_companies", [])
+            )
+            return
+        super()._save_m2m()
+
     def __init__(self, *args, **kwargs):
         from django.contrib.auth import get_user_model
         from django.db.models import Q
 
         super().__init__(*args, **kwargs)
+        if self.instance.pk and hasattr(self.instance, "version"):
+            self.fields["record_version"].initial = self.instance.version
+            self.fields["record_version"].required = True
+        if self._meta.model is models.Chain:
+            self.fields["confirm_similar"] = forms.BooleanField(
+                required=False,
+                label="Я проверил похожие сети и подтверждаю отдельную запись",
+            )
         if "manager" in self.fields:
             current = self.instance.manager_id if self.instance.pk else None
             self.fields["manager"] = EmployeeChoiceField(
                 label="Ответственный менеджер",
                 queryset=get_user_model()
-                .objects.filter(Q(is_active=True) | Q(pk=current))
-                .order_by("last_name", "first_name", "username"),
+                .objects.filter(
+                    Q(is_active=True, groups__name__in=["Директор", "РОП", "Менеджер"])
+                    | Q(pk=current)
+                )
+                .order_by("last_name", "first_name", "username")
+                .distinct(),
             )
         if self._meta.model is models.Store:
             raw = (
@@ -133,9 +159,41 @@ class ResourceForm(forms.ModelForm):
         self.order_fields(
             ["name", "chain", "company", "region", "format", "code", "address"]
         )
+        from .widgets import SearchSelect, SearchSelectMultiple
+        for field in self.fields.values():
+            if isinstance(field, forms.ModelChoiceField):
+                kind = next((key for key, model in MODELS.items() if model is field.queryset.model), 'employees')
+                widget = SearchSelectMultiple if isinstance(field, forms.ModelMultipleChoiceField) else SearchSelect
+                field.widget = widget(attrs={'data-reference-kind':kind})
+                field.widget.choices = field.choices
 
     def clean(self):
         data = super().clean()
+        if self._meta.model is models.Chain and data.get("name"):
+            from .integrity import chain_matches
+
+            matches = chain_matches(data["name"], self.instance.pk)
+            if matches and not data.get("confirm_similar"):
+                raise forms.ValidationError(
+                    "Похожие сети: "
+                    + ", ".join(map(str, matches[:10]))
+                    + ". Используйте существующую сеть или подтвердите отдельную запись."
+                )
+        if (
+            self.instance.pk
+            and hasattr(self.instance, "version")
+            and data.get("record_version") != self.instance.version
+        ):
+            raise forms.ValidationError(
+                "Запись изменена другим сотрудником. Обновите карточку и повторите изменения."
+            )
+        if self._meta.model is models.Project and data.get("company"):
+            from .integrity import validate_project
+
+            candidate = models.Project(company=data["company"])
+            validate_project(
+                candidate, data.get("stores", []), data.get("additional_companies", [])
+            )
         if self._meta.model is models.Chain and "companies" in data:
             self.instance.validate_companies(
                 [company.pk for company in data["companies"]]

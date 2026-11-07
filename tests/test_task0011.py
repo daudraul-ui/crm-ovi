@@ -113,7 +113,12 @@ def test_assign_created_employee_to_company(verified, company):
     )
     response = verified.post(
         f"/companies/{company.pk}/edit/",
-        {"name": company.name, "manager": employee.pk, "inn": company.inn},
+        {
+            "record_version": company.version,
+            "name": company.name,
+            "manager": employee.pk,
+            "inn": company.inn,
+        },
     )
     assert response.status_code == 302
     company.refresh_from_db()
@@ -145,7 +150,11 @@ def test_chain_multiple_companies_ui_and_api(verified, company, user):
     assert (
         verified.post(
             f"/chains/{chain.pk}/edit/",
-            {"name": "ТС изменённая", "companies": [company.pk]},
+            {
+                "record_version": chain.version,
+                "name": "ТС изменённая",
+                "companies": [company.pk],
+            },
         ).status_code
         == 302
     )
@@ -198,7 +207,12 @@ def test_cannot_unlink_company_used_by_store(verified, company):
     assert (
         verified.patch(
             f"/api/chains/{chain.pk}/",
-            {"companies": []},
+            {
+                "version": verified.get(f"/api/chains/{chain.pk}/")
+                .json()
+                .get("version", 1),
+                "companies": [],
+            },
             content_type="application/json",
         ).status_code
         == 400
@@ -304,7 +318,12 @@ def test_region_aliases_hidden(verified):
     )
     response = verified.get("/api/regions/").json()
     assert response["count"] == 1
-    assert response["results"][0] == {"id": region.pk, "name": region.name}
+    assert response["results"][0] == {
+        "id": region.pk,
+        "name": region.name,
+        "version": 1,
+        "archived": False,
+    }
     assert verified.get(f"/regions/{alias.pk}/edit/").status_code == 404
     assert verified.delete(f"/api/regions/{alias.pk}/").status_code == 404
     assert verified.post(f"/regions/{alias.pk}/delete/").status_code == 404

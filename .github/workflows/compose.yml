@@ -23,7 +23,7 @@ jobs:
       - name: Install browser test dependencies
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chromium firefox
       - name: Inspect runner capacity (no cleanup)
         run: |
           df -h .
@@ -44,5 +44,6 @@ jobs:
           path: |
             work/compose-ci/*.log
             work/task0011-*.png
+            work/task0012-*.png
           retention-days: 7
           if-no-files-found: warn

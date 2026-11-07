@@ -1,11 +1,12 @@
 // Chromium UI regression. Fixtures/session are generated separately in an isolated test database.
-const {chromium} = require('playwright');
+const {chromium, firefox} = require('playwright');
 const fs = require('fs');
 const fixtures = JSON.parse(fs.readFileSync(process.env.CRM_BROWSER_FIXTURES, 'utf8'));
 const base = process.env.CRM_BROWSER_URL || 'http://127.0.0.1:18002';
 const assert = (condition, message) => { if (!condition) throw Error(message); };
 (async () => {
-  const browser = await chromium.launch({executablePath: process.env.CHROMIUM_PATH, headless: true, args: ['--no-sandbox']});
+  const engine = process.env.CRM_BROWSER_ENGINE === 'firefox' ? firefox : chromium;
+  const browser = await engine.launch({executablePath: process.env.CHROMIUM_PATH, headless: true, args: ['--no-sandbox']});
   try {
     for (const [device, viewport] of [['desktop', {width:1440,height:1000}], ['mobile', {width:390,height:844}]]) {
       const context = await browser.newContext({viewport});
@@ -13,7 +14,7 @@ const assert = (condition, message) => { if (!condition) throw Error(message); }
       const page = await context.newPage();
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
-      const suffix = fixtures.suffix + '-' + device;
+      const suffix = fixtures.suffix + '-' + (process.env.CRM_BROWSER_ENGINE || 'chromium') + '-' + device;
       await page.goto(base + '/');
       for (const kind of ['companies','stores','projects','tasks']) {
         await page.locator(`.metric-link[href="/${kind}/"]`).click();
@@ -46,6 +47,7 @@ const assert = (condition, message) => { if (!condition) throw Error(message); }
       await page.goto(base + '/chains/new/');
       const chainName = 'ТС UI ' + suffix;
       await page.locator('[name=name]').fill(chainName);
+      await page.locator('[name=confirm_similar]').check();
       await page.locator('[name=companies]').selectOption([String(fixtures.company_a),String(fixtures.company_b)]);
       await page.getByRole('button', {name:'Сохранить',exact:true}).click();
       await page.getByRole('link', {name:chainName,exact:true}).click();
@@ -77,6 +79,8 @@ const assert = (condition, message) => { if (!condition) throw Error(message); }
       await page.screenshot({path:`work/task0011-${device}-store.png`,fullPage:true});
       await page.getByRole('button', {name:'Сохранить',exact:true}).click();
       await page.getByRole('heading', {name:'Магазины',exact:true}).waitFor();
+      const headers = await page.locator('thead th').allTextContents();
+      assert(JSON.stringify(headers.slice(0,7)) === JSON.stringify(['Номер (КОД)','Название','Адрес','Регион','Формат','Торговая сеть','Клиент']), 'Seven store columns');
       await page.getByRole('link', {name:'Магазин UI ' + suffix,exact:true}).click();
       const detail = await page.locator('article').innerText();
       assert(detail.includes(fixtures.company_b_name) && detail.includes('Формат UI ' + suffix), 'Saved store relations');
