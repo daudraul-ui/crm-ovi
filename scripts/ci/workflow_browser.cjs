@@ -93,7 +93,24 @@ const assert=(v,m)=>{if(!v) throw Error(m);};
    }
    const denied=await pages.engineer.goto(`${base}/workflow/quotes/${fixture.quote}/`);
    assert(denied.status()===403,'Engineer cannot read quote economics');
+   const rop=pages.rop;
+   await rop.goto(base+'/workflow/calendars/new/');
+   assert((await rop.locator('#id_check_at').inputValue()).startsWith('10:00'),'Daily check at 10:00');
+   assert(await rop.locator('#id_max_pause_days').inputValue()==='4','Four-day maximum pause');
+   assert(await rop.locator('#id_quote_reminder_days').inputValue()==='2','Quote reminder after two workdays');
+   assert(/^\d{4}-\d{2}-\d{2}$/.test(await rop.locator('#id_first_report_on').inputValue()),'Default report date is browser-valid');
+   await rop.locator('#id_name').fill('Производственный календарь РФ '+engineName);
+   await rop.getByRole('button',{name:'Сохранить',exact:true}).click();
+   await rop.waitForURL(/\/workflow\/calendars\/\d+\/$/);
+   const calendarUrl=rop.url();
+   for(const year of ['2026','2027']){
+     await rop.goto(calendarUrl+'do/fill_ru/');
+     await rop.locator('#id_year').selectOption(year);
+     await rop.locator('#id_reason').fill('Календарь РФ утверждён владельцем');
+     await rop.getByRole('button',{name:'Сохранить',exact:true}).click();
+     await rop.waitForURL(calendarUrl);
+   }
    assert(errors.length===0,errors.join('\n'));
-   console.log('PASS workflow '+engineName+': inquiry, technical approvals, quote, PDF, dispatch, baseline, payment, launch, partial/full supplier confirmations, desktop/mobile, permissions');
+   console.log('PASS workflow '+engineName+': inquiry, technical approvals, quote, PDF, dispatch, baseline, payment, launch, partial/full supplier confirmations, desktop/mobile, permissions, approved Russian calendar');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});

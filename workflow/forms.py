@@ -138,7 +138,7 @@ class RecordForm(forms.ModelForm):
                     attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"
                 )
             elif isinstance(field, forms.DateField):
-                field.widget = forms.DateInput(attrs={"type": "date"})
+                field.widget = forms.DateInput(attrs={"type": "date"}, format="%Y-%m-%d")
 
 
 def record_form(kind):
