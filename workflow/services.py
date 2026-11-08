@@ -111,7 +111,12 @@ def event(user, obj, action, **data):
     if project:
         data.setdefault("responsible_manager", project.manager_id)
     Event.objects.create(
-        actor=user, model=obj._meta.label, object_id=obj.pk, action=action, data=data
+        actor=user,
+        model=obj._meta.label,
+        object_id=obj.pk,
+        action=action,
+        data=data,
+        document=evidence(data["document"], obj) if data.get("document") else None,
     )
     if user:
         audit(user, action, obj)

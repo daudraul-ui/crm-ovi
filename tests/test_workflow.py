@@ -782,3 +782,54 @@ def test_forecast_below_minimum_requires_two_distinct_leaders(flow):
     )
     b.refresh_from_db()
     assert s.budget_review(b) == "Требуется согласование обоих руководителей"
+
+
+def test_document_used_only_in_history_cannot_be_deleted(flow):
+    doc = Document.objects.create(
+        name="Письмо об остановке",
+        project=flow["project"],
+        uploaded_by=flow["manager"],
+        file=SimpleUploadedFile("stop.txt", b"supplier stop evidence"),
+    )
+    s.event(
+        flow["manager"], flow["ol"], "request_stop", document=doc.pk, reason="Письмо"
+    )
+    with pytest.raises(ProtectedError):
+        doc.delete()
+
+
+def test_revision_cannot_replace_another_order_budget(flow):
+    from workflow.models import Budget
+
+    submit(flow)
+    approve(flow)
+    cmd(
+        flow,
+        "q",
+        "baseline",
+        {
+            "document": flow["doc"].pk,
+            "reason": "Заказ",
+            "previous_budget": None,
+            "change_type": "",
+        },
+    )
+    previous = Budget.objects.get(quote=flow["q"])
+    other = cmd(flow, "q", "revise")
+    # Simulate another independently approved order in the same project.
+    Quote.objects.filter(pk=other.pk).update(previous=None, status="approved")
+    other.refresh_from_db()
+    flow["other_q"] = other
+    with pytest.raises(ValidationError):
+        cmd(
+            flow,
+            "other_q",
+            "baseline",
+            {
+                "document": flow["doc"].pk,
+                "reason": "Изменение",
+                "previous_budget": previous.pk,
+                "change_type": "price",
+            },
+        )
+    assert not Budget.objects.filter(previous=previous).exists()

@@ -312,7 +312,9 @@ class Allocation(Record):
     class Meta(Record.Meta):
         verbose_name = "Распределение затрат"
         constraints = [
-            models.UniqueConstraint(fields=["cost", "line"], name="workflow_allocation_unique")
+            models.UniqueConstraint(
+                fields=["cost", "line"], name="workflow_allocation_unique"
+            )
         ]
 
 
@@ -501,6 +503,9 @@ class Confirmation(Record):
 
 
 class Event(models.Model):
+    document = models.ForeignKey(
+        "crm.Document", on_delete=models.PROTECT, null=True, blank=True
+    )
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True
     )

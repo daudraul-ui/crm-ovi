@@ -46,3 +46,41 @@ def test_workflow_migration_preserves_existing_crm_rows():
         assert Task.objects.get(pk=task.pk).assignee_id == user.pk
     finally:
         MigrationExecutor(connection).migrate(latest)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_event_document_migration_preserves_evidence():
+    executor = MigrationExecutor(connection)
+    latest = executor.loader.graph.leaf_nodes()
+    target = [("workflow", "0005_budget_forecast_revision_budgetdecision")]
+    try:
+        executor.migrate(target)
+        apps = executor.loader.project_state(target).apps
+        user = apps.get_model("auth", "User").objects.create(
+            username="evidence-migration"
+        )
+        company = apps.get_model("crm", "Company").objects.create(
+            name="Клиент", manager_id=user.pk
+        )
+        project = apps.get_model("crm", "Project").objects.create(
+            name="Проект", company_id=company.pk, manager_id=user.pk
+        )
+        document = apps.get_model("crm", "Document").objects.create(
+            name="Письмо",
+            project_id=project.pk,
+            uploaded_by_id=user.pk,
+            file="documents/preserved.txt",
+        )
+        old = apps.get_model("workflow", "Event").objects.create(
+            model="workflow.OrderLine",
+            object_id=1,
+            action="request_stop",
+            data={"document": str(document.pk)},
+        )
+        MigrationExecutor(connection).migrate(latest)
+        from workflow.models import Event
+
+        assert Event.objects.get(pk=old.pk).document_id == document.pk
+        assert Event.objects.get(pk=old.pk).data == {"document": str(document.pk)}
+    finally:
+        MigrationExecutor(connection).migrate(latest)
