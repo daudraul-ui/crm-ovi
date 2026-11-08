@@ -1,9 +1,11 @@
+from datetime import time, timedelta
 from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.utils import timezone
 
 from crm.models import ConcurrentRecord
 
@@ -18,6 +20,10 @@ def money(label, **kwargs):
     )
 
 
+def first_report_date():
+    return timezone.localdate() + timedelta(days=14)
+
+
 class Record(ConcurrentRecord):
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -30,16 +36,23 @@ class Record(ConcurrentRecord):
 
 
 class Calendar(Record):
+    first_report_on = models.DateField(
+        "Первый сводный SLA-отчёт (далее каждые 14 дней)", default=first_report_date
+    )
     name = models.CharField("Название календаря", max_length=120)
     timezone = models.CharField(
         "Часовой пояс IANA", max_length=60, default="Europe/Moscow"
     )
-    check_at = models.TimeField("Время ежедневной проверки")
+    check_at = models.TimeField("Время ежедневной проверки", default=time(10))
     max_pause_days = models.PositiveIntegerField(
-        "Максимальная пауза (календарных дней)", validators=[MinValueValidator(1)]
+        "Максимальная пауза (календарных дней)",
+        validators=[MinValueValidator(1)],
+        default=4,
     )
     quote_reminder_days = models.PositiveIntegerField(
-        "Первое напоминание КП (рабочих дней)", validators=[MinValueValidator(1)]
+        "Первое напоминание КП (рабочих дней)",
+        validators=[MinValueValidator(1)],
+        default=2,
     )
 
     def clean(self):
@@ -65,6 +78,21 @@ class CalendarDay(Record):
         constraints = [
             models.UniqueConstraint(
                 fields=["calendar", "date"], name="workflow_calendar_date"
+            )
+        ]
+
+
+class SlaReport(Record):
+    calendar = models.ForeignKey(Calendar, on_delete=models.PROTECT)
+    period_start = models.DateField("Начало периода")
+    period_end = models.DateField("Конец периода")
+    summary = models.JSONField(default=dict)
+
+    class Meta(Record.Meta):
+        verbose_name = "Сводный SLA-отчёт"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["calendar", "period_end"], name="workflow_sla_period_unique"
             )
         ]
 

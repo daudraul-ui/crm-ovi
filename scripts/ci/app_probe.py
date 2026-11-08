@@ -225,7 +225,7 @@ def browser_fixtures():
 def workflow_integration():
     from datetime import time as clock_time
 
-    from workflow.models import CalendarDay, Incident, SupplierOrder
+    from workflow.models import CalendarDay, Incident, SlaReport, SupplierOrder
     from workflow.tasks import monitor
 
     orders = list(
@@ -237,11 +237,18 @@ def workflow_integration():
     for order in orders:
         # Explicit synthetic calendar for a real Worker/Beat test on any CI date.
         order.calendar.check_at = clock_time(0)
+        order.calendar.first_report_on = timezone.localdate()
         order.calendar.save()
         CalendarDay.objects.filter(calendar=order.calendar).update(working=True)
     orders[0].authorized_at = timezone.now() - timezone.timedelta(days=3)
     orders[0].save()
     monitor.delay().get(timeout=60)
+    assert (
+        SlaReport.objects.filter(
+            calendar_id__in=[o.calendar_id for o in orders]
+        ).count()
+        == 2
+    )
     assert Incident.objects.filter(key=f"payment:{orders[0].pk}", closed=False).exists()
     orders[1].authorized_at = timezone.now() - timezone.timedelta(days=3)
     orders[1].save()

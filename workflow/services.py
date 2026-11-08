@@ -1102,6 +1102,16 @@ def kpi():
 
 def calendar_command(user, calendar, action, data, now):
     require_role(user, "РОП", "Директор")
+    if action == "fill_ru":
+        from .ru_calendar import russian_calendar
+
+        return calendar_command(
+            user,
+            calendar,
+            "fill",
+            {**russian_calendar(data["year"]), "reason": data["reason"]},
+            now,
+        )
     if action != "fill":
         raise ValidationError("Неизвестная операция календаря.")
     start, end = data["start"], data["end"]

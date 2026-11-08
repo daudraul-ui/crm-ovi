@@ -93,13 +93,21 @@ RESOURCES = {
     ),
     "calendars": (
         m.Calendar,
-        ["name", "timezone", "check_at", "max_pause_days", "quote_reminder_days"],
+        [
+            "name",
+            "timezone",
+            "check_at",
+            "max_pause_days",
+            "quote_reminder_days",
+            "first_report_on",
+        ],
     ),
     "calendar-days": (m.CalendarDay, ["calendar", "date", "working"]),
     "budgets": (m.Budget, []),
     "decisions": (m.Decision, []),
     "confirmations": (m.Confirmation, []),
     "budget-decisions": (m.BudgetDecision, []),
+    "sla-reports": (m.SlaReport, []),
 }
 FINANCIAL = {
     "quotes",
@@ -214,6 +222,17 @@ def action_fields():
             },
         ),
         "approve_manager": ("Подтвердить ТЗ как менеджер", {}),
+        "fill_ru": (
+            "Заполнить производственный календарь РФ",
+            {
+                "year": forms.TypedChoiceField(
+                    label="Год (федеральная пятидневка)",
+                    choices=[(2026, "2026"), (2027, "2027")],
+                    coerce=int,
+                ),
+                "reason": text("Основание применения календаря РФ"),
+            },
+        ),
         "handover": (
             "РОП: передать проект новому менеджеру",
             {
@@ -382,7 +401,7 @@ def action_fields():
 
 ACTIONS = {
     m.Inquiry: ["handover"],
-    m.Calendar: ["fill"],
+    m.Calendar: ["fill", "fill_ru"],
     m.Specification: ["approve_manager", "approve_engineer", "revise", "handover"],
     m.Quote: ["policy", "submit", "decide", "exception", "send", "revise", "baseline"],
     m.SupplierOrder: [

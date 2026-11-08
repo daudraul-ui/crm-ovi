@@ -75,6 +75,7 @@ LABELS = {
     "forecast_revision": "Редакция прогноза",
     "revision": "Редакция прогноза",
     "budget": "Утверждённая экономика",
+    "year": "Год",
 }
 EVENTS = {
     "save": "Сохранение",
@@ -105,13 +106,14 @@ EVENTS = {
     "fill": "Календарь утверждён",
     "handover": "Менеджер проекта изменён РОПом",
     "tasks_transferred": "Открытые задачи переданы РОПу для распределения",
+    "fill_ru": "Применён производственный календарь РФ",
 }
 
 
 def fields(obj):
     result = []
     for field in obj._meta.fields:
-        if field.name == "stores":
+        if field.name in ("stores", "summary"):
             continue
         value = getattr(obj, field.name)
         if field.choices:
@@ -152,7 +154,7 @@ def actions(user, obj):
     result = []
     for action in possible:
         allowed = managing
-        if action in ("policy", "exception", "reschedule", "fill"):
+        if action in ("policy", "exception", "reschedule", "fill", "fill_ru"):
             allowed = s.role(user, "РОП", "Директор")
         if action in ("pause", "resume", "handover"):
             allowed = s.role(user, "РОП")

@@ -1,3 +1,4 @@
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from celery import shared_task
@@ -5,7 +6,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from .models import Event, Incident, Quote, SupplierOrder
+from .models import Calendar, Event, Incident, Quote, SlaReport, SupplierOrder
 from .services import business_due, elapsed, leaders, lock_writes, moment, notify
 
 
@@ -28,6 +29,7 @@ def alert(key, project, name, users, date, critical=False):
 def monitor():
     lock_writes()
     now = timezone.now()
+    generate_sla_reports(now)
     errors = []
     for order in SupplierOrder.objects.exclude(authorized_at=None).select_related(
         "calendar", "specification__project__manager"
@@ -139,3 +141,63 @@ def monitor():
                 f"calendar:{calendar.pk}:{date}",
             )
     return {"calendar_errors": errors}
+
+
+def generate_sla_reports(now):
+    """A separate 14-calendar-day summary; daily operational controls stay intact."""
+    for calendar in Calendar.objects.all():
+        today = now.astimezone(ZoneInfo(calendar.timezone)).date()
+        if today < calendar.first_report_on:
+            continue
+        end = calendar.first_report_on + timedelta(
+            days=((today - calendar.first_report_on).days // 14) * 14
+        )
+        if (
+            now < moment(calendar, end)
+            or SlaReport.objects.filter(calendar=calendar, period_end=end).exists()
+        ):
+            continue
+        start = end - timedelta(days=14)
+        orders = SupplierOrder.objects.filter(calendar=calendar)
+        quotes = Quote.objects.filter(calendar=calendar)
+        overdue = orders.filter(sent_at__isnull=True, due_at__lte=now)
+        unconfirmed = orders.filter(sent_at__isnull=False).exclude(status="confirmed")
+        pending = quotes.filter(status__in=["pending", "discussion"])
+        report = SlaReport.objects.create(
+            calendar=calendar,
+            period_start=start,
+            period_end=end,
+            summary={
+                "Просрочено размещение (на момент отчёта)": overdue.count(),
+                "Не полностью подтверждены поставщиком": unconfirmed.count(),
+                "Заказы без подтверждения зачисления денег": orders.filter(
+                    authorized_at__isnull=False,
+                    conditions__payment=True,
+                    conditions__received=False,
+                )
+                .distinct()
+                .count(),
+                "КП ожидают согласования": pending.count(),
+                "Просрочены следующие контакты": quotes.filter(
+                    followup__due_at__lte=now
+                )
+                .exclude(followup__status="done")
+                .count(),
+                "Размещено заказов за период": orders.filter(
+                    sent_at__gte=moment(calendar, start),
+                    sent_at__lt=moment(calendar, end),
+                ).count(),
+                "Отправлено КП за период": quotes.filter(
+                    sent_at__gte=moment(calendar, start),
+                    sent_at__lt=moment(calendar, end),
+                ).count(),
+                "Просроченные заказы": [str(o) for o in overdue],
+                "Неподтверждённые партии": [str(o) for o in unconfirmed],
+                "КП на согласовании": [str(q) for q in pending],
+            },
+        )
+        notify(
+            leaders(),
+            f"Сводный SLA-отчёт за {start}–{end}: /workflow/sla-reports/{report.pk}/. Ежедневный контроль продолжается.",
+            f"sla-report:{report.pk}",
+        )

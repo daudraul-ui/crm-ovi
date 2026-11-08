@@ -833,3 +833,57 @@ def test_revision_cannot_replace_another_order_budget(flow):
             },
         )
     assert not Budget.objects.filter(previous=previous).exists()
+
+
+@pytest.mark.parametrize("year", [2026, 2027])
+def test_official_russian_calendar_and_transfers(flow, year):
+    calendar = Calendar.objects.create(name=f"РФ {year}")
+    assert (
+        calendar.check_at == time(10)
+        and calendar.max_pause_days == 4
+        and calendar.quote_reminder_days == 2
+    )
+    flow["rf_calendar"] = calendar
+    cmd(
+        flow,
+        "rf_calendar",
+        "fill_ru",
+        {"year": year, "reason": "Утверждено владельцем"},
+        "rop",
+    )
+    assert calendar.calendarday_set.count() == 365
+    assert calendar.calendarday_set.filter(working=True).count() == 247
+    assert calendar.calendarday_set.get(date=date(year, 12, 31)).working is False
+    if year == 2027:
+        assert calendar.calendarday_set.get(date=date(2027, 2, 20)).working is True
+        assert calendar.calendarday_set.get(date=date(2027, 2, 22)).working is False
+    with pytest.raises(ValidationError):
+        cmd(
+            flow,
+            "rf_calendar",
+            "fill_ru",
+            {"year": 2028, "reason": "Нет утверждённого источника"},
+            "rop",
+        )
+
+
+def test_two_week_report_is_separate_and_deduplicated(flow):
+    from workflow.models import SlaReport
+    from workflow.tasks import generate_sla_reports
+
+    calendar = flow["calendar"]
+    calendar.first_report_on = date(2026, 11, 9)
+    calendar.save()
+    moment = s.moment(calendar, date(2026, 11, 9))
+    generate_sla_reports(moment - timedelta(seconds=1))
+    assert not SlaReport.objects.exists()
+    generate_sla_reports(moment)
+    generate_sla_reports(moment + timedelta(days=13))
+    assert SlaReport.objects.count() == 1
+    first = SlaReport.objects.get()
+    snapshot = first.summary
+    generate_sla_reports(moment + timedelta(days=14))
+    assert SlaReport.objects.count() == 2
+    first.refresh_from_db()
+    assert first.summary == snapshot
+    assert Notification.objects.filter(key__startswith="wf:sla-report:").count() == 4

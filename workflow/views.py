@@ -14,7 +14,7 @@ from crm.api import Conflict
 
 from . import presentation, services
 from .forms import FINANCIAL, RESOURCES, action_form, command_data, record_form
-from .models import Budget, Event, Incident, Quote, SupplierOrder
+from .models import Budget, Event, Incident, Quote, SlaReport, SupplierOrder
 
 
 def access(request, kind):
@@ -196,6 +196,7 @@ def detail(request, kind, pk):
             "budget_review": services.budget_review(obj)
             if isinstance(obj, Budget)
             else None,
+            "sla_summary": obj.summary.items() if isinstance(obj, SlaReport) else None,
             "removable": presentation.can_edit(request.user, obj)
             and kind
             in (
