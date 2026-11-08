@@ -251,6 +251,33 @@ class Store(Named):
 
 
 class Project(Named):
+    def validate_workflow_manager(self):
+        if not self.pk or getattr(self, "_workflow_handover", False):
+            return
+        from django.core.exceptions import ValidationError
+
+        from workflow.models import Inquiry, Specification
+
+        previous = (
+            type(self)
+            .objects.filter(pk=self.pk)
+            .values_list("manager_id", flat=True)
+            .first()
+        )
+        if previous != self.manager_id and (
+            Specification.objects.filter(project_id=self.pk).exists()
+            or Inquiry.objects.filter(project_id=self.pk).exists()
+        ):
+            raise ValidationError(
+                {
+                    "manager": "Проект участвует в БП-01/02. Передачу выполняет РОП из обращения или технической спецификации; открытые задачи сначала поступают РОПу."
+                }
+            )
+
+    def save(self, *args, **kwargs):
+        self.validate_workflow_manager()
+        return super().save(*args, **kwargs)
+
     additional_companies = models.ManyToManyField(
         Company,
         blank=True,
@@ -262,6 +289,7 @@ class Project(Named):
         from .integrity import validate_manager
 
         validate_manager(self)
+        self.validate_workflow_manager()
 
     class Status(models.TextChoices):
         NEW = "new", "Новый"

@@ -59,6 +59,24 @@ def chain_matches(name, pk=None):
 
 
 def validate_project(project, stores, additional):
+    stores = list(stores)
+    if project.pk:
+        from workflow.models import Equipment, QuoteLine
+
+        ids = [s.pk for s in stores]
+        if (
+            Equipment.objects.filter(specification__project=project)
+            .exclude(store_id__in=ids)
+            .exists()
+            or QuoteLine.objects.filter(quote__specification__project=project)
+            .exclude(store_id__in=ids)
+            .exists()
+        ):
+            raise ValidationError(
+                {
+                    "stores": "Магазин используется в технической спецификации или КП. Сохраните связь с проектом."
+                }
+            )
     allowed = {project.company_id, *[c.pk for c in additional]}
     conflicts = [str(s) for s in stores if s.company_id and s.company_id not in allowed]
     if conflicts:
@@ -117,14 +135,30 @@ def validate_relations(sender, instance, action, reverse, pk_set, **kwargs):
         if reverse:
             for project in Project.objects.filter(pk__in=pk_set):
                 validate_project(
-                    project, [instance], project.additional_companies.all()
+                    project,
+                    [*project.stores.all(), instance],
+                    project.additional_companies.all(),
                 )
         else:
             validate_project(
                 instance,
-                Store.objects.filter(pk__in=pk_set),
+                Store.objects.filter(
+                    pk__in=set(instance.stores.values_list("pk", flat=True)) | pk_set
+                ),
                 instance.additional_companies.all(),
             )
+    if sender is Project.stores.through and action in ("pre_remove", "pre_clear"):
+        projects = Project.objects.filter(stores=instance) if reverse else [instance]
+        if reverse and action == "pre_remove":
+            projects = projects.filter(pk__in=pk_set)
+        for project in projects:
+            removed = [instance.pk] if reverse else pk_set or []
+            remaining = (
+                project.stores.exclude(pk__in=removed)
+                if action == "pre_remove" or reverse
+                else []
+            )
+            validate_project(project, remaining, project.additional_companies.all())
     if sender is Project.additional_companies.through and action in (
         "pre_remove",
         "pre_clear",

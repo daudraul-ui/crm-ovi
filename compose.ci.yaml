@@ -6,3 +6,4 @@ services:
   beat:
     environment:
       OVERDUE_NOTIFICATION_INTERVAL: '5'
+      BUSINESS_NOTIFICATION_INTERVAL: '5'

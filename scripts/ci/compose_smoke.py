@@ -180,10 +180,33 @@ def main():
     print(app(SOURCE, "seed"))
     proxy_checks(SOURCE)
     if os.getenv("CRM_BROWSER_SMOKE") == "1":
+        workflow_file = WORK / "workflow-fixtures.json"
+        workflow_file.write_text(
+            compose(
+                SOURCE,
+                "exec",
+                "-T",
+                "web",
+                "python",
+                "scripts/ci/workflow_fixture.py",
+                capture=True,
+            )
+        )
+        workflow_file.chmod(0o600)
         fixture_file = WORK / "browser-fixtures.json"
         fixture_file.write_text(app(SOURCE, "browser-fixtures"))
         fixture_file.chmod(0o600)
         for engine in ("chromium", "firefox"):
+            subprocess.run(
+                ["node", "scripts/ci/workflow_browser.cjs"],
+                check=True,
+                env=dict(
+                    os.environ,
+                    CRM_WORKFLOW_FIXTURES=str(workflow_file),
+                    CRM_BROWSER_URL="http://127.0.0.1:18080",
+                    CRM_BROWSER_ENGINE=engine,
+                ),
+            )
             for script in ("task0011_browser.cjs", "task0012_browser.cjs"):
                 subprocess.run(
                     ["node", "scripts/ci/" + script],
@@ -195,6 +218,7 @@ def main():
                         CRM_BROWSER_ENGINE=engine,
                     ),
                 )
+        print(app(SOURCE, "workflow-integration"))
     expected = app(SOURCE, "manifest")
     compose(SOURCE, "stop", "web", "worker", "beat")
     subprocess.run(

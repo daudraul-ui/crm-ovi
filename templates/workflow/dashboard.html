@@ -1,0 +1,8 @@
+{% extends 'base.html' %}{% block content %}
+<h1>Продажи и производство</h1><p>От обращения и согласования КП до подтверждения заказа поставщиком.</p>
+<div class="toolbar">{% for kind,label in menu %}<a class="btn" href="{% url 'workflow-list' kind %}">{{ label }}</a>{% endfor %}</div>
+<h2>Требуют внимания</h2>{% for incident in incidents %}<div class="card"><strong>{% if incident.critical %}КРИТИЧЕСКОЕ · {% endif %}{{ incident.name }}</strong><p>{{ incident.project }}</p></div>{% empty %}<p>Открытых инцидентов нет. Проверьте, что рабочий календарь заполнен и фоновый контроль запущен.</p>{% endfor %}
+<h2>Заказы на контроле</h2>{% for order in orders %}<p><a href="{% url 'workflow-detail' 'orders' order.pk %}">{{ order }}</a> · {{ order.get_status_display }} · срок {{ order.due_at|default:'не назначен' }}</p>{% empty %}<p>Заказов пока нет.</p>{% endfor %}
+<h2>КП на согласовании</h2>{% for quote in quotes %}<p><a href="{% url 'workflow-detail' 'quotes' quote.pk %}">{{ quote }}</a> · {{ quote.get_status_display }}</p>{% empty %}<p>Нет доступных КП на согласовании.</p>{% endfor %}
+{% if kpi %}<h2>Сохранение маржи · цель ≥90%</h2><p>В допуске: {{ kpi.passing }} из {{ kpi.eligible }} завершённых проектов. {% if kpi.percent != None %}{{ kpi.percent }}%{% else %}Недостаточно данных{% endif %}. Не включены: {{ kpi.incomplete }}.</p><p>Допуск — снижение не более 5 п.п. от действующей утверждённой базы. Проекты без завершённых финансовых данных не считаются успешными.</p>{% endif %}
+{% endblock %}

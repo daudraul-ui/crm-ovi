@@ -45,5 +45,6 @@ jobs:
             work/compose-ci/*.log
             work/task0011-*.png
             work/task0012-*.png
+            work/workflow-*.png
           retention-days: 7
           if-no-files-found: warn

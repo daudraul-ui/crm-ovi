@@ -2,8 +2,13 @@ from django.urls import include, path
 
 from crm import employees, excel_views, views
 from crm.api import router
+from workflow import views as workflow_views
 
 urlpatterns = [
+    path("api/workflow/<str:kind>/", workflow_views.api),
+    path("api/workflow/<str:kind>/<int:pk>/", workflow_views.api),
+    path("api/workflow/<str:kind>/<int:pk>/<str:action>/", workflow_views.api),
+    path("workflow/", include("workflow.urls")),
     path("health/", views.health),
     path("login/", views.sign_in, name="login"),
     path("logout/", views.sign_out, name="logout"),
@@ -22,7 +27,11 @@ urlpatterns = [
     path("excel/import/<uuid:job_id>/", excel_views.import_excel, name="import_job"),
     path("excel/template/", excel_views.template, name="import_template"),
     path("excel/history/", excel_views.import_history, name="import_history"),
-    path("excel/import/<uuid:job_id>/source/", excel_views.import_source, name="import_source"),
+    path(
+        "excel/import/<uuid:job_id>/source/",
+        excel_views.import_source,
+        name="import_source",
+    ),
     path("excel/export/<str:kind>/", excel_views.export, name="export_excel"),
     path("documents/<int:pk>/download/", views.download, name="download"),
     path("api/", include(router.urls)),

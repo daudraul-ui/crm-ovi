@@ -141,6 +141,24 @@ def manifest():
     assert len(data) >= 2, (
         f"Expected fixture files and protected import sources, got {len(data)}"
     )
+    from django.apps import apps
+
+    workflow_rows = {}
+    for model in apps.get_app_config("workflow").get_models():
+        rows = []
+        for row in model.objects.order_by("pk").values():
+            rows.append(
+                {
+                    k: hashlib.sha256(bytes(v)).hexdigest()
+                    if isinstance(v, (bytes, memoryview))
+                    else str(v)
+                    for k, v in row.items()
+                }
+            )
+        workflow_rows[model._meta.label] = rows
+    data["__workflow_database_sha256__"] = hashlib.sha256(
+        json.dumps(workflow_rows, sort_keys=True).encode()
+    ).hexdigest()
     print(json.dumps(data, sort_keys=True))
 
 
@@ -204,9 +222,45 @@ def browser_fixtures():
     )
 
 
+def workflow_integration():
+    from datetime import time as clock_time
+
+    from workflow.models import CalendarDay, Incident, SupplierOrder
+    from workflow.tasks import monitor
+
+    orders = list(
+        SupplierOrder.objects.filter(
+            name__in=["Партия chromium", "Партия firefox"]
+        ).order_by("pk")
+    )
+    assert len(orders) == 2
+    for order in orders:
+        # Explicit synthetic calendar for a real Worker/Beat test on any CI date.
+        order.calendar.check_at = clock_time(0)
+        order.calendar.save()
+        CalendarDay.objects.filter(calendar=order.calendar).update(working=True)
+    orders[0].authorized_at = timezone.now() - timezone.timedelta(days=3)
+    orders[0].save()
+    monitor.delay().get(timeout=60)
+    assert Incident.objects.filter(key=f"payment:{orders[0].pk}", closed=False).exists()
+    orders[1].authorized_at = timezone.now() - timezone.timedelta(days=3)
+    orders[1].save()
+    deadline = time.monotonic() + 60
+    while not Incident.objects.filter(
+        key=f"payment:{orders[1].pk}", closed=False
+    ).exists():
+        if time.monotonic() > deadline:
+            raise AssertionError("Beat did not run workflow monitor")
+        time.sleep(1)
+    print(
+        "PASS workflow monitor: actual Worker, Beat, PostgreSQL incidents and payment reminders"
+    )
+
+
 {
     "seed": seed,
     "auth": auth,
     "manifest": manifest,
     "browser-fixtures": browser_fixtures,
+    "workflow-integration": workflow_integration,
 }[sys.argv[1]]()

@@ -23,6 +23,7 @@ INSTALLED_APPS = [
     "django_otp",
     "django_otp.plugins.otp_totp",
     "crm",
+    "workflow",
 ]
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -62,7 +63,7 @@ if os.getenv("SQLITE") == "1":
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "work/dev.sqlite3",
+            "NAME": os.getenv("SQLITE_DB_PATH", str(BASE_DIR / "work/dev.sqlite3")),
         }
     }
 AUTH_PASSWORD_VALIDATORS = [
@@ -97,10 +98,14 @@ REST_FRAMEWORK = {
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 CELERY_BEAT_SCHEDULE = {
+    "business-processes": {
+        "task": "workflow.tasks.monitor",
+        "schedule": float(os.getenv("BUSINESS_NOTIFICATION_INTERVAL", "300")),
+    },
     "overdue": {
         "task": "crm.tasks.notify_overdue",
         "schedule": float(os.getenv("OVERDUE_NOTIFICATION_INTERVAL", "300")),
-    }
+    },
 }
 DATA_UPLOAD_MAX_MEMORY_SIZE = 12 * 1024 * 1024
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024

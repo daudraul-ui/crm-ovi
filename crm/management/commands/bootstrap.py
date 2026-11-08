@@ -41,6 +41,12 @@ class Command(BaseCommand):
             elif name == "Администратор":
                 perms = perms.exclude(codename="view_finance")
             group.permissions.set(perms)
+            if name in ("Менеджер", "РОП", "Директор"):
+                group.permissions.add(
+                    *Permission.objects.filter(
+                        content_type__app_label="workflow", codename="view_economics"
+                    )
+                )
         self.stdout.write(
             "Роли обновлены. Создание сотрудников доступно директору и администратору в настройках."
         )

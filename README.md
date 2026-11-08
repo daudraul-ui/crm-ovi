@@ -1,4 +1,6 @@
-# CRM OVI — этап A
+# CRM OVI v0.1 — TASK 001.2 и БП-01/02
+
+Текущий объём: [матрица требований](docs/REQUIREMENTS-BP01-BP02.md) и [БП-01/02: работа, API, роли и безопасное обновление Codespaces](docs/BP01-BP02-update.md). Разделы ниже описывают исходную основу; новые правила коммерческой экономики и передачи проекта приведены в инструкции БП-01/02.
 
 Работающая основа CRM продаж и проектов остекления холодильного оборудования. Python 3.12, Django 5.2 LTS, DRF, PostgreSQL 17, Redis 7.4, Celery, Django Templates, HTMX 2, Alpine 3, Tailwind 4, Gunicorn, Caddy. Точные Python-версии зафиксированы в `requirements.txt`, frontend — в `package-lock.json`. JS и собранный CSS локальные, CDN при работе приложения не требуется.
 
