@@ -1142,7 +1142,7 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="allocation",
             constraint=models.UniqueConstraint(
-                fields=("cost", "line"), name="workflow_allocation"
+                fields=("cost", "line"), name="workflow_allocation_unique"
             ),
         ),
         migrations.AddConstraint(
