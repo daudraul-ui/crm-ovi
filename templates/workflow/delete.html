@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<h1>Удаление строки черновика</h1><p>Вы действительно хотите удалить позицию «{{ obj }}»?</p><p>{{ error }}</p><form method="post">{% csrf_token %}<input type="hidden" name="version" value="{{ obj.version }}"><button>Да</button> <a href="{% url 'workflow-detail' kind obj.pk %}">Нет</a></form>{% endblock %}

@@ -1,0 +1,9 @@
+# Only combine with compose.yaml inside the isolated CI runner.
+# Actual web/Gunicorn, PostgreSQL, Redis and Caddy configurations are inherited.
+services:
+  worker:
+    command: celery -A config worker --loglevel=info --concurrency=1
+  beat:
+    environment:
+      OVERDUE_NOTIFICATION_INTERVAL: '5'
+      BUSINESS_NOTIFICATION_INTERVAL: '5'

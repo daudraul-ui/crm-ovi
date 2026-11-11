@@ -1,0 +1,452 @@
+import uuid
+from pathlib import Path
+
+from django.conf import settings
+from django.core.validators import FileExtensionValidator, RegexValidator
+from django.db import models
+
+
+class ConcurrentRecord(models.Model):
+    version = models.PositiveIntegerField(default=1, editable=False)
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+        from django.db import transaction
+
+        with transaction.atomic():
+            if self.pk and not self._state.adding:
+                current = type(self).objects.select_for_update().get(pk=self.pk)
+                if current.version != self.version:
+                    raise ValidationError(
+                        "Запись изменена другим сотрудником. Обновите карточку и повторите изменения."
+                    )
+                self.version += 1
+                if kwargs.get("update_fields") is not None:
+                    kwargs["update_fields"] = set(kwargs["update_fields"]) | {"version"}
+            return super().save(*args, **kwargs)
+
+    class Meta:
+        abstract = True
+
+
+class Named(ConcurrentRecord):
+    name = models.CharField("Название", max_length=255)
+    archived = models.BooleanField("В архиве", default=False)
+
+    class Meta:
+        abstract = True
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class Company(Named):
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        from .integrity import validate_inn, validate_manager
+
+        validate_manager(self)
+        previous = (
+            Company.objects.filter(pk=self.pk).values_list("inn", flat=True).first()
+            if self.pk
+            else None
+        )
+        if previous == self.inn:
+            return  # Legacy identifiers are preserved until explicitly corrected.
+        validate_inn(self.inn)
+        duplicates = Company.objects.filter(inn=self.inn).exclude(pk=self.pk)
+        if self.inn and duplicates.exists():
+            raise ValidationError(
+                {
+                    "inn": "ИНН уже используется: "
+                    + ", ".join(str(c) for c in duplicates[:5])
+                }
+            )
+
+    inn = models.CharField(
+        "ИНН",
+        max_length=12,
+        blank=True,
+        validators=[RegexValidator(r"^(\d{10}|\d{12})$", "ИНН: 10 или 12 цифр")],
+    )
+    details = models.TextField("Реквизиты", blank=True)
+    email = models.EmailField("Email", blank=True)
+    phone = models.CharField("Телефон", max_length=40, blank=True)
+    manager = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, verbose_name="Менеджер"
+    )
+    financial_notes = models.TextField("Финансовая информация", blank=True)
+
+    class Meta(Named.Meta):
+        permissions = [
+            ("view_finance", "Просмотр и изменение финансовой информации"),
+            ("manage_employees", "Создание сотрудников и назначение ролей"),
+        ]
+
+
+class Contact(Named):
+    company = models.ForeignKey(
+        Company,
+        on_delete=models.CASCADE,
+        related_name="contacts",
+        verbose_name="Компания",
+    )
+    position = models.CharField("Должность", max_length=120, blank=True)
+    phone = models.CharField("Телефон", max_length=40, blank=True)
+    email = models.EmailField(blank=True)
+
+
+class Chain(Named):
+    companies = models.ManyToManyField(
+        Company,
+        blank=True,
+        related_name="chains",
+        verbose_name="Клиенты (юридические лица)",
+    )
+
+    def validate_companies(self, ids):
+        from django.core.exceptions import ValidationError
+
+        if (
+            self.pk
+            and Store.objects.filter(chain=self, company__isnull=False)
+            .exclude(company_id__in=ids)
+            .exists()
+        ):
+            raise ValidationError(
+                {
+                    "companies": "Юридическое лицо используется магазином этой сети. Сначала измените клиента в магазине."
+                }
+            )
+
+
+def region_key(name):
+    return "".join(name.split()).casefold()
+
+
+class Region(Named):
+    normalized_name = models.CharField(
+        max_length=255, unique=True, null=True, blank=True, editable=False
+    )
+    canonical = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="legacy_aliases",
+        editable=False,
+    )
+    legacy_data = models.JSONField(default=dict, blank=True, editable=False)
+
+    class Meta(Named.Meta):
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(canonical__isnull=True, normalized_name__isnull=False)
+                    | models.Q(canonical__isnull=False, normalized_name__isnull=True)
+                ),
+                name="region_canonical_key",
+            )
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        self.name = " ".join(self.name.split())
+        if not self.name:
+            raise ValidationError({"name": "Введите название региона"})
+        self.normalized_name = None if self.canonical_id else region_key(self.name)
+        duplicate = Region.objects.filter(normalized_name=self.normalized_name).exclude(
+            pk=self.pk
+        )
+        if self.normalized_name and duplicate.exists():
+            raise ValidationError(
+                {
+                    "name": "Регион с таким названием уже существует (регистр и пробелы не учитываются)"
+                }
+            )
+
+    def save(self, *args, **kwargs):
+        self.normalized_name = None if self.canonical_id else region_key(self.name)
+        return super().save(*args, **kwargs)
+
+
+class StoreFormat(Named):
+    chain = models.ForeignKey(Chain, on_delete=models.CASCADE, verbose_name="Сеть")
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        from .integrity import name_key
+
+        if any(
+            name_key(n) == name_key(self.name)
+            for n in StoreFormat.objects.filter(chain_id=self.chain_id)
+            .exclude(pk=self.pk)
+            .values_list("name", flat=True)
+        ):
+            raise ValidationError(
+                {"name": "Формат с таким названием уже существует в этой сети."}
+            )
+
+
+class Store(Named):
+    company = models.ForeignKey(
+        Company,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="stores",
+        verbose_name="Клиент (юридическое лицо)",
+    )
+    chain = models.ForeignKey(Chain, on_delete=models.PROTECT, verbose_name="Сеть")
+    region = models.ForeignKey(
+        Region, null=True, blank=True, on_delete=models.PROTECT, verbose_name="Регион"
+    )
+    format = models.ForeignKey(
+        StoreFormat,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        verbose_name="Формат",
+    )
+    code = models.CharField("Код", max_length=80)
+    address = models.TextField("Адрес")
+
+    class Meta(Named.Meta):
+        constraints = [
+            models.UniqueConstraint(fields=["chain", "code"], name="store_chain_code")
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.format_id and self.format.chain_id != self.chain_id:
+            raise ValidationError({"format": "Выберите формат из той же сети"})
+        if self.company_id and (
+            not self.chain_id
+            or not self.chain.companies.filter(pk=self.company_id).exists()
+        ):
+            raise ValidationError(
+                {"company": "Юридическое лицо не связано с выбранной торговой сетью"}
+            )
+        if self.region_id and self.region.canonical_id:
+            raise ValidationError({"region": "Выберите регион из общего справочника"})
+        if self.pk and self.company_id:
+            for project in self.project_set.all():
+                if (
+                    self.company_id != project.company_id
+                    and not project.additional_companies.filter(
+                        pk=self.company_id
+                    ).exists()
+                ):
+                    raise ValidationError(
+                        {
+                            "company": "Клиент не согласован в связанном проекте: "
+                            + str(project)
+                        }
+                    )
+
+
+class Project(Named):
+    def validate_workflow_manager(self):
+        if not self.pk or getattr(self, "_workflow_handover", False):
+            return
+        from django.core.exceptions import ValidationError
+
+        from workflow.models import Inquiry, Specification
+
+        previous = (
+            type(self)
+            .objects.filter(pk=self.pk)
+            .values_list("manager_id", flat=True)
+            .first()
+        )
+        if previous != self.manager_id and (
+            Specification.objects.filter(project_id=self.pk).exists()
+            or Inquiry.objects.filter(project_id=self.pk).exists()
+        ):
+            raise ValidationError(
+                {
+                    "manager": "Проект участвует в БП-01/02. Передачу выполняет РОП из обращения или технической спецификации; открытые задачи сначала поступают РОПу."
+                }
+            )
+
+    def save(self, *args, **kwargs):
+        self.validate_workflow_manager()
+        return super().save(*args, **kwargs)
+
+    additional_companies = models.ManyToManyField(
+        Company,
+        blank=True,
+        related_name="additional_projects",
+        verbose_name="Дополнительные юридические лица (явное согласование)",
+    )
+
+    def clean(self):
+        from .integrity import validate_manager
+
+        validate_manager(self)
+        self.validate_workflow_manager()
+
+    class Status(models.TextChoices):
+        NEW = "new", "Новый"
+        ACTIVE = "active", "В работе"
+        PAUSED = "paused", "Приостановлен"
+        DONE = "done", "Завершён"
+
+    company = models.ForeignKey(
+        Company, on_delete=models.PROTECT, verbose_name="Клиент"
+    )
+    manager = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, verbose_name="Менеджер"
+    )
+    stores = models.ManyToManyField(Store, blank=True, verbose_name="Магазины")
+    status = models.CharField(
+        "Статус", max_length=20, choices=Status.choices, default=Status.NEW
+    )
+    description = models.TextField("Описание", blank=True)
+
+
+class Task(Named):
+    project = models.ForeignKey(
+        Project, null=True, blank=True, on_delete=models.PROTECT, verbose_name="Проект"
+    )
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, verbose_name="Ответственный"
+    )
+    due_at = models.DateTimeField("Срок")
+    priority = models.CharField(
+        "Приоритет",
+        max_length=10,
+        choices=[("low", "Низкий"), ("normal", "Обычный"), ("high", "Высокий")],
+        default="normal",
+    )
+    status = models.CharField(
+        "Статус",
+        max_length=10,
+        choices=[("new", "Новая"), ("active", "В работе"), ("done", "Выполнена")],
+        default="new",
+    )
+
+    @property
+    def overdue(self):
+        from django.utils import timezone
+
+        return self.status != "done" and self.due_at < timezone.now()
+
+
+class Comment(ConcurrentRecord):
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="comments",
+        verbose_name="Проект",
+    )
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    text = models.TextField("Комментарий")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.text[:80]
+
+
+def private_path(instance, filename):
+    return f"documents/{uuid.uuid4().hex}{Path(filename).suffix.lower()}"
+
+
+class Document(Named):
+    name = models.CharField("Название", max_length=255)
+    company = models.ForeignKey(
+        Company, null=True, blank=True, on_delete=models.PROTECT, verbose_name="Клиент"
+    )
+    project = models.ForeignKey(
+        Project, null=True, blank=True, on_delete=models.PROTECT, verbose_name="Проект"
+    )
+    file = models.FileField(
+        "Файл",
+        upload_to=private_path,
+        validators=[
+            FileExtensionValidator(["pdf", "xlsx", "docx", "txt", "png", "jpg", "jpeg"])
+        ],
+    )
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not self.company_id and not self.project_id:
+            raise ValidationError("Укажите клиента или проект")
+        if (
+            self.company_id
+            and self.project_id
+            and self.project.company_id != self.company_id
+        ):
+            raise ValidationError("Проект принадлежит другому клиенту")
+        if self.file and self.file.size > 10 * 1024 * 1024:
+            raise ValidationError("Максимум 10 МБ")
+        if self.file and not self.file._committed:
+            from .file_validation import validate_upload
+
+            validate_upload(self.file)
+
+
+class Notification(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    text = models.CharField(max_length=500)
+    read = models.BooleanField(default=False)
+    key = models.CharField(max_length=150, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.text
+
+
+class AuditEvent(models.Model):
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL
+    )
+    action = models.CharField(max_length=50)
+    model = models.CharField(max_length=80)
+    object_id = models.CharField(max_length=80)
+    before = models.JSONField(default=dict)
+    after = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class RecoveryCode(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    digest = models.CharField(max_length=255)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+
+class WriteLock(models.Model):
+    """Singleton row serializes cross-entity writes, including import commits."""
+
+    name = models.CharField(max_length=30, unique=True)
+
+
+class ImportJob(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    file = models.FileField(upload_to="imports/%Y/%m/")
+    original_name = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    mode = models.CharField(max_length=20, default="create")
+    mapping = models.JSONField(default=dict)
+    answers = models.JSONField(default=dict)
+    row_overrides = models.JSONField(default=dict)
+    preview = models.JSONField(default=dict)
+    committed_at = models.DateTimeField(null=True)

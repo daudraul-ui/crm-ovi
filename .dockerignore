@@ -1,0 +1,10 @@
+.git
+.venv
+work
+.env
+private_media
+backups
+node_modules
+__pycache__
+.pytest_cache
+staticfiles

@@ -1,0 +1,52 @@
+from django.contrib.auth.models import Group, Permission
+from django.core.management.base import BaseCommand
+
+
+class Command(BaseCommand):
+    help = "Создать роли; безопасно повторять"
+
+    def handle(self, *args, **kwargs):
+        for name in ["Директор", "РОП", "Менеджер", "Инженер", "Администратор"]:
+            group, _ = Group.objects.get_or_create(name=name)
+            perms = Permission.objects.filter(content_type__app_label="crm")
+            if name in ("Менеджер", "РОП"):
+                perms = perms.exclude(
+                    codename__in=["view_finance", "manage_employees"]
+                ).exclude(content_type__model="auditevent")
+                if name == "Менеджер":
+                    perms = perms.exclude(codename__startswith="delete_")
+            elif name == "Инженер":
+                perms = perms.filter(
+                    content_type__model__in=[
+                        "project",
+                        "store",
+                        "chain",
+                        "region",
+                        "storeformat",
+                        "task",
+                        "document",
+                        "comment",
+                    ]
+                ).exclude(codename__startswith="delete_")
+                perms = (
+                    perms.filter(codename__startswith="view_")
+                    | perms.filter(
+                        content_type__model__in=["task", "comment"],
+                        codename__startswith="change_",
+                    )
+                    | perms.filter(
+                        content_type__model="comment", codename="add_comment"
+                    )
+                )
+            elif name == "Администратор":
+                perms = perms.exclude(codename="view_finance")
+            group.permissions.set(perms)
+            if name in ("Менеджер", "РОП", "Директор"):
+                group.permissions.add(
+                    *Permission.objects.filter(
+                        content_type__app_label="workflow", codename="view_economics"
+                    )
+                )
+        self.stdout.write(
+            "Роли обновлены. Создание сотрудников доступно директору и администратору в настройках."
+        )

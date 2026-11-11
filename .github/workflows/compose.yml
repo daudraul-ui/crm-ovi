@@ -1,0 +1,50 @@
+name: Compose integration
+on:
+  push:
+    branches: [feat/stage-a]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install browser test dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium firefox
+      - name: Inspect runner capacity (no cleanup)
+        run: |
+          df -h .
+          docker info --format 'Storage driver: {{.Driver}}'
+          docker compose version
+      - name: Full Compose proxy and backup/restore smoke
+        env:
+          CRM_BROWSER_SMOKE: '1'
+        run: |
+          set -o pipefail
+          mkdir -p work/compose-ci
+          python scripts/ci/compose_smoke.py 2>&1 | tee work/compose-ci/result.log
+      - name: Upload service diagnostics (no env, backups or sessions)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            work/compose-ci/*.log
+            work/task0011-*.png
+            work/task0012-*.png
+            work/workflow-*.png
+          retention-days: 7
+          if-no-files-found: warn

@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<a href="{% url 'workflow-list' kind %}">← Реестр</a><h1>{{ title }}</h1>{% if obj %}<p>{{ obj }}</p>{% endif %}<form method="post" class="card">{% csrf_token %}{{ form.as_p }}<button class="btn" type="submit">Сохранить</button></form>{% endblock %}
